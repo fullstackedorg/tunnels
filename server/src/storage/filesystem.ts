@@ -1,5 +1,6 @@
 import path from "node:path";
-import { Item } from "./index";
+import crypto from "node:crypto";
+import { Item, StorageProvider, WhereValue } from "./interface";
 import { getEnvOrArgCLI } from "../utils/args";
 import fs from "node:fs";
 import { PgTableWithColumns, getTableConfig } from "drizzle-orm/pg-core";
@@ -158,4 +159,51 @@ export async function getFileSystemCollection(
             return removed.at(0);
         },
     };
+}
+
+export class FileSystemStorageProvider implements StorageProvider {
+    async list(table: PgTableWithColumns<any>) {
+        const collection = await getFileSystemCollection(table);
+        return collection.all();
+    }
+
+    async find(
+        table: PgTableWithColumns<any>,
+        where: WhereValue | WhereValue[],
+    ) {
+        const whereArr = Array.isArray(where) ? where : [where];
+        const collection = await getFileSystemCollection(table);
+        return collection
+            .all()
+            .filter((row) =>
+                whereArr.every(({ column, value }) => row[column] === value),
+            );
+    }
+
+    async add(table: PgTableWithColumns<any>, item: Omit<Item, "id">) {
+        const collection = await getFileSystemCollection(table);
+        return collection.add(item);
+    }
+
+    async get(
+        table: PgTableWithColumns<any>,
+        id: crypto.UUID | number | string,
+    ) {
+        const collection = await getFileSystemCollection(table);
+        return collection.all().find((row) => row.id === id);
+    }
+
+    async update(
+        table: PgTableWithColumns<any>,
+        id: crypto.UUID | number,
+        item: Partial<Item>,
+    ) {
+        const collection = await getFileSystemCollection(table);
+        return collection.update(id, item);
+    }
+
+    async remove(table: PgTableWithColumns<any>, id: crypto.UUID | number) {
+        const collection = await getFileSystemCollection(table);
+        return collection.remove(id);
+    }
 }

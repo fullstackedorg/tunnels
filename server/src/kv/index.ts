@@ -1,6 +1,9 @@
-import { initRedis, getRedis, setRedis, delRedis } from "./redis";
-import { getFileSystem, setFileSystem, delFileSystem } from "./filesystem";
+import { initRedis, RedisKVProvider } from "./redis";
+import { FileSystemKVProvider } from "./filesystem";
 import { logger } from "../utils/logger";
+import { KVProvider } from "./interface";
+
+export * from "./interface";
 
 export enum KVType {
     FileSystem = "filesystem",
@@ -11,23 +14,23 @@ export const kvType = (await initRedis()) ? KVType.Redis : KVType.FileSystem;
 
 logger.info("kv", `KV type [${kvType}]`);
 
+const kvProvider: KVProvider =
+    kvType === KVType.Redis
+        ? new RedisKVProvider()
+        : new FileSystemKVProvider();
+
 export async function get<T = any>(key: string): Promise<T | null> {
-    if (kvType === KVType.Redis) {
-        return getRedis<T>(key);
-    }
-    return getFileSystem<T>(key);
+    return kvProvider.get<T>(key);
 }
 
-export async function set(key: string, value: any): Promise<void> {
-    if (kvType === KVType.Redis) {
-        return setRedis(key, value);
-    }
-    return setFileSystem(key, value);
+export async function set(
+    key: string,
+    value: any,
+    expiration?: number,
+): Promise<void> {
+    return kvProvider.set(key, value, expiration);
 }
 
 export async function del(key: string): Promise<void> {
-    if (kvType === KVType.Redis) {
-        return delRedis(key);
-    }
-    return delFileSystem(key);
+    return kvProvider.del(key);
 }

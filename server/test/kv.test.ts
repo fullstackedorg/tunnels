@@ -28,6 +28,25 @@ test("KV - set, get, del operations", async () => {
     assert.strictEqual(afterDel, null);
 });
 
+test("KV - expiration in set function", async () => {
+    const testKey = "test:exp_key_" + Date.now();
+    const testData = { foo: "bar" };
+
+    // Set with 1 second expiration
+    await kv.set(testKey, testData, 1);
+
+    // Immediate get returns value
+    const immediate = await kv.get(testKey);
+    assert.deepStrictEqual(immediate, testData);
+
+    // Wait 1.1 seconds for key to expire
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Get after expiration returns null
+    const expired = await kv.get(testKey);
+    assert.strictEqual(expired, null);
+});
+
 test("KV - getByToken and invalidateItem integration", async () => {
     const token = "token_kv_test_" + Date.now();
     const machine = await add(machinesTable, {

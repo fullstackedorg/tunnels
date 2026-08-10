@@ -1,6 +1,7 @@
 import { createClient } from "redis";
 import { getEnvOrArgCLI } from "../utils/args";
 import { logger } from "../utils/logger";
+import { KVProvider } from "./interface";
 
 type RedisClientType = ReturnType<typeof createClient>;
 let client: RedisClientType | null = null;
@@ -45,13 +46,21 @@ export async function getRedis<T = any>(key: string): Promise<T | null> {
     }
 }
 
-export async function setRedis(key: string, value: any): Promise<void> {
+export async function setRedis(
+    key: string,
+    value: any,
+    expiration?: number,
+): Promise<void> {
     if (!client) {
         throw new Error("Redis not initialized");
     }
     const serialized =
         typeof value === "string" ? value : JSON.stringify(value);
-    await client.set(key, serialized);
+    if (expiration && expiration > 0) {
+        await client.set(key, serialized, { EX: expiration });
+    } else {
+        await client.set(key, serialized);
+    }
 }
 
 export async function delRedis(key: string): Promise<void> {
@@ -59,4 +68,18 @@ export async function delRedis(key: string): Promise<void> {
         throw new Error("Redis not initialized");
     }
     await client.del(key);
+}
+
+export class RedisKVProvider implements KVProvider {
+    async get<T = any>(key: string): Promise<T | null> {
+        return getRedis<T>(key);
+    }
+
+    async set(key: string, value: any, expiration?: number): Promise<void> {
+        return setRedis(key, value, expiration);
+    }
+
+    async del(key: string): Promise<void> {
+        return delRedis(key);
+    }
 }
