@@ -1,0 +1,46 @@
+
+services:
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "${MONGODB_PORT}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${PASSWORD}
+
+  postgresql:
+    image: postgres:latest
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    environment:
+      POSTGRES_USER: ${USERNAME}
+      POSTGRES_PASSWORD: ${PASSWORD}
+      POSTGRES_DB: postgres
+
+  redis:
+    image: redis:latest
+    ports:
+      - "${REDIS_PORT}:6379"
+    command: >
+      redis-server --requirepass ${PASSWORD}
+
+  mysql:
+    image: mysql:latest
+    ports:
+      - "${MYSQL_PORT}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${PASSWORD}
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    ports:
+      - "${S3_PORT}:8333"
+    environment:
+      AWS_ACCESS_KEY_ID: ${USERNAME}
+      AWS_SECRET_ACCESS_KEY: ${PASSWORD}
+
+  git-server:
+    build:
+      context: ./fullstacked/test/git/local-git-server
+    ports:
+      - "${GIT_SERVER_PORT}:80"

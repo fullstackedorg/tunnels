@@ -1,0 +1,11 @@
+node_modules
+out
+user_data
+machines.json
+services.json
+proxies.json
+server/openapi.json
+.env
+client/stats
+.tmp
+server/data
