@@ -5,6 +5,7 @@ import * as ws from "ws";
 import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 
 const PORT = 3463;
 const testDataDir = path.resolve(`./test-data-dir-${PORT}`);
@@ -16,7 +17,7 @@ import type { Machine } from "../src/entities/schema/machine";
 import type { Service } from "../src/entities/schema/service";
 
 test("Warden KV lifeline registration and lookup", async () => {
-    const machineId = "test-warden-machine-" + Date.now();
+    const machineId = ("test-warden-machine-" + Date.now()) as crypto.UUID;
     const machineToken = "test-token-" + Date.now();
     const machine: Machine = {
         id: machineId,
@@ -44,12 +45,12 @@ test("Warden KV lifeline registration and lookup", async () => {
 
 test("Warden getRelayedService throws if machine not connected in KV", async () => {
     const service: Service = {
-        id: "test-service-id",
+        id: "test-service-id" as crypto.UUID,
         name: "test-service",
         token: "service-token",
         internalHost: "127.0.0.1",
         internalPort: 8080,
-        machineId: "non-existent-machine-id",
+        machineId: "non-existent-machine-id" as crypto.UUID,
     };
 
     await assert.rejects(
@@ -78,7 +79,7 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
     // 2. Spawn Relay Server with --workers 2 using ALLOW_FILESYSTEM_MULTIWORKER=1
     const cleanEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
-        if (!k.startsWith("NODE_")) {
+        if (!k.startsWith("NODE_") && v) {
             cleanEnv[k] = v;
         }
     }
@@ -232,6 +233,6 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         );
         await fs.promises
             .rm(testDataDir, { recursive: true, force: true })
-            .catch(() => {});
+            .catch(() => { });
     }
 });
