@@ -4,6 +4,7 @@ import { initPostgreSQL, PostgreSQLStorageProvider } from "./postgresql";
 import { FileSystemStorageProvider } from "./filesystem";
 import { logger } from "../utils/logger";
 import { StorageProvider, Item, WhereValue } from "./interface";
+import { getEnvOrArgCLI } from "../utils/args";
 
 export * from "./interface";
 
@@ -17,6 +18,18 @@ export const storageType = (await initPostgreSQL())
     : StorageType.FileSystem;
 
 logger.info("storage", `Storage type [${storageType}]`);
+
+const workers = getEnvOrArgCLI(["WORKERS", "workers", "w"], "number");
+if (
+    workers &&
+    workers > 1 &&
+    storageType === StorageType.FileSystem &&
+    !getEnvOrArgCLI(["ALLOW_FILESYSTEM_MULTIWORKER"])
+) {
+    throw new Error(
+        "Multi-worker mode is not supported with FileSystem storage. Use PostgreSQL to enable workers.",
+    );
+}
 
 const storageProvider: StorageProvider =
     storageType === StorageType.PostgreSQL

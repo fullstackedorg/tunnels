@@ -105,7 +105,7 @@ export async function getFileSystemCollection(
             fsCollectionStoredData = JSON.parse(
                 raw,
             ) as FileSystemCollectionStoredData;
-        } catch { }
+        } catch {}
 
         storedDataCache.set(tableName, fsCollectionStoredData);
     }

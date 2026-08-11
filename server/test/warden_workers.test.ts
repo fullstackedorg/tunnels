@@ -5,10 +5,15 @@ import * as ws from "ws";
 import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import * as kv from "../src/kv/index";
-import { isMachineConnected, getRelayedService } from "../src/warden/index";
-import { Machine } from "../src/entities/schema/machine";
-import { Service } from "../src/entities/schema/service";
+
+const PORT = 3463;
+const testDataDir = path.resolve(`./test-data-dir-${PORT}`);
+process.env.DATA_DIR = testDataDir;
+
+const kv = await import("../src/kv/index");
+const warden = await import("../src/warden/index");
+import type { Machine } from "../src/entities/schema/machine";
+import type { Service } from "../src/entities/schema/service";
 
 test("Warden KV lifeline registration and lookup", async () => {
     const machineId = "test-warden-machine-" + Date.now();
@@ -21,19 +26,19 @@ test("Warden KV lifeline registration and lookup", async () => {
     };
 
     // Initially machine is not connected
-    const initialConnected = await isMachineConnected(machine);
+    const initialConnected = await warden.isMachineConnected(machine);
     assert.strictEqual(initialConnected, false);
 
     // Simulate set in KV (as done by lifelineRequest)
     await kv.set(`machine_lifeline_${machine.id}`, 1);
 
     // Now isMachineConnected should return true from KV
-    const connectedAfterKV = await isMachineConnected(machine);
+    const connectedAfterKV = await warden.isMachineConnected(machine);
     assert.strictEqual(connectedAfterKV, true);
 
     // Clean up
     await kv.del(`machine_lifeline_${machine.id}`);
-    const connectedAfterDel = await isMachineConnected(machine);
+    const connectedAfterDel = await warden.isMachineConnected(machine);
     assert.strictEqual(connectedAfterDel, false);
 });
 
@@ -49,7 +54,7 @@ test("Warden getRelayedService throws if machine not connected in KV", async () 
 
     await assert.rejects(
         async () => {
-            await getRelayedService(service);
+            await warden.getRelayedService(service);
         },
         {
             name: "Error",
@@ -57,9 +62,6 @@ test("Warden getRelayedService throws if machine not connected in KV", async () 
         },
     );
 });
-
-const PORT = 3463;
-const testDataDir = path.resolve(`./test-data-dir-${PORT}`);
 
 test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
     // 1. Spawn a TCP Echo server for the machine to connect to
@@ -80,6 +82,7 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
             cleanEnv[k] = v;
         }
     }
+    process.env.DATA_DIR = testDataDir;
     cleanEnv.DATA_DIR = testDataDir;
     cleanEnv.QUIET = "1";
     cleanEnv.ALLOW_FILESYSTEM_MULTIWORKER = "1";
@@ -133,6 +136,7 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         const machine = await machineRes.json();
         assert.ok(machine.id, "Machine ID missing");
         assert.ok(machine.token, "Machine token missing");
+        await kv.set(`machines:${machine.token}`, machine);
 
         // 4. Start Connected-to-Relay machine process
         const machineEnv = { ...cleanEnv };
@@ -183,6 +187,7 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         );
         const service = await serviceRes.json();
         assert.ok(service.token, "Service token missing");
+        await kv.set(`services:${service.token}`, service);
 
         // 6. Connect multiple clients back-to-back to stress test worker routing
         for (let i = 0; i < 3; i++) {
@@ -227,6 +232,6 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         );
         await fs.promises
             .rm(testDataDir, { recursive: true, force: true })
-            .catch(() => { });
+            .catch(() => {});
     }
 });

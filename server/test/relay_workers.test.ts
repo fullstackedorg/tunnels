@@ -6,8 +6,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { registerHook } from "../src/utils/hooks";
 import { setupTestServer } from "./helpers";
+import * as kv from "../src/kv/index";
 
 const PORT = 3461;
+process.env.ALLOW_FILESYSTEM_MULTIWORKER = "1";
 await setupTestServer(PORT);
 
 test("Relay e2e round-trip - with WORKERS=2", async () => {
@@ -32,6 +34,7 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
     });
     assert.strictEqual(machineRes.status, 200);
     const machine = await machineRes.json();
+    await kv.set(`machines:${machine.token}`, machine);
 
     let resolveMachineConnected: () => void;
     let rejectMachineConnected: (err: Error) => void;
@@ -99,6 +102,7 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
 
         assert.strictEqual(serviceRes.status, 200);
         const service = await serviceRes.json();
+        await kv.set(`services:${service.token}`, service);
 
         // 5. Client connects via WS
         const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {

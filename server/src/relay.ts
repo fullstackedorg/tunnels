@@ -3,7 +3,7 @@ import { getEnvOrArgCLI } from "./utils/args";
 import { createServerHTTP, stopServerHTTP } from "./http/index";
 import { logger } from "./utils/logger";
 import { WardenMessageIPC } from "./warden";
-import net from "node:net"
+import net from "node:net";
 
 let workers: cluster.Worker[] | null = null;
 
@@ -17,16 +17,23 @@ export async function startRelay() {
 
     workers = new Array(workerCount).fill(null).map(() => cluster.fork());
 
-    cluster.on("message", (worker, message: WardenMessageIPC, socket: net.Socket) => {
-        if (message && typeof message === "object" && message.targetWorkerId) {
-            const targetWorker =
-                cluster.workers?.[message.targetWorkerId] ||
-                workers?.find((w) => w.id === message.targetWorkerId);
-            if (targetWorker) {
-                targetWorker.send(message, socket);
+    cluster.on(
+        "message",
+        (worker, message: WardenMessageIPC, socket: net.Socket) => {
+            if (
+                message &&
+                typeof message === "object" &&
+                message.targetWorkerId
+            ) {
+                const targetWorker =
+                    cluster.workers?.[message.targetWorkerId] ||
+                    workers?.find((w) => w.id === message.targetWorkerId);
+                if (targetWorker) {
+                    targetWorker.send(message, socket);
+                }
             }
-        }
-    });
+        },
+    );
 
     cluster.on("exit", (worker, code, signal) => {
         if (workers === null) return;
