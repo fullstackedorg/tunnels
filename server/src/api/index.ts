@@ -71,5 +71,6 @@ export async function restApiRequest(
         }
     }
 
+    logger.info("API", `Path not handled, respond not found [${req.url}]`)
     notFound(res);
 }
