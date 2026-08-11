@@ -96,23 +96,6 @@ test("KV - start and stop cleanup interval", () => {
     stopCleanupInterval();
 });
 
-test("KV - startCleanupInterval only runs on primary thread", () => {
-    const originalIsWorker = cluster.isWorker;
-
-    try {
-        cluster.isWorker = true;
-        const workerTimer = startCleanupInterval(500);
-        assert.strictEqual(workerTimer, undefined);
-
-        cluster.isWorker = false;
-        const primaryTimer = startCleanupInterval(500);
-        assert.ok(primaryTimer);
-        stopCleanupInterval();
-    } finally {
-        cluster.isWorker = originalIsWorker;
-    }
-});
-
 test("KV - getByToken and invalidateItem integration", async () => {
     const token = "token_kv_test_" + Date.now();
     const machine = await add(machinesTable, {

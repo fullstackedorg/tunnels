@@ -90,6 +90,13 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
 
                 const insertedItem = await add(table, item);
 
+                // if (insertedItem?.token) {
+                //     await kv.set(
+                //         `${tableName}:${insertedItem.token}`,
+                //         insertedItem,
+                //     );
+                // }
+
                 await executeHook(`post_${tableName}`, req, insertedItem);
 
                 return respondJSON(res, insertedItem);
@@ -105,9 +112,7 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
                 }
                 const itemToUpdate = await readAll(req, "json");
                 const updatedItem = await update(table, id, itemToUpdate);
-                if (updatedItem) {
-                    await invalidateItem(table, updatedItem.token);
-                }
+                await invalidateItem(table, updatedItem.token);
 
                 await executeHook(`put_${tableName}`, req, updatedItem);
 

@@ -2,8 +2,8 @@ import cluster from "node:cluster";
 import { getEnvOrArgCLI } from "./utils/args";
 import { createServerHTTP, stopServerHTTP } from "./http/index";
 import { logger } from "./utils/logger";
-import net from "node:net";
-import { WardensInterMessage } from "./warden";
+import { WardenMessageIPC } from "./warden";
+import net from "node:net"
 
 let workers: cluster.Worker[] | null = null;
 
@@ -17,27 +17,19 @@ export async function startRelay() {
 
     workers = new Array(workerCount).fill(null).map(() => cluster.fork());
 
-    cluster.on(
-        "message",
-        (worker, message: WardensInterMessage, socket: net.Socket) => {
-            if (
-                message &&
-                typeof message === "object" &&
-                message.targetWorkerId
-            ) {
-                const targetWorker =
-                    cluster.workers?.[message.targetWorkerId] ||
-                    workers?.find((w) => w.id === message.targetWorkerId);
-
-                if (targetWorker) {
-                    targetWorker.send(message, socket);
-                }
+    cluster.on("message", (worker, message: WardenMessageIPC, socket: net.Socket) => {
+        if (message && typeof message === "object" && message.targetWorkerId) {
+            const targetWorker =
+                cluster.workers?.[message.targetWorkerId] ||
+                workers?.find((w) => w.id === message.targetWorkerId);
+            if (targetWorker) {
+                targetWorker.send(message, socket);
             }
-        },
-    );
+        }
+    });
 
     cluster.on("exit", (worker, code, signal) => {
-        if (workers === null || code === 0) return;
+        if (workers === null) return;
         const index = workers.indexOf(worker);
         if (index !== -1) {
             logger.info(
