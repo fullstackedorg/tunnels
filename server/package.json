@@ -1,10 +1,10 @@
 {
-    "version": "0.0.1-main.3",
+    "version": "0.0.1-main.9",
     "scripts": {
         "start": "node -r @nitrogql/esbuild-register src/main.ts",
         "test": "node -r @nitrogql/esbuild-register --test test/*.test.ts",
         "build": "esbuild --bundle --format=esm --platform=node --outfile=dist/index.mjs src/main.ts --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
-        "fmt": "prettier --write ."
+        "fmt": "node -r @nitrogql/esbuild-register version.ts && prettier --write ."
     },
     "prettier": {
         "tabWidth": 4
