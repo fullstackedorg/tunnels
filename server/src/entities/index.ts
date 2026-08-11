@@ -1,5 +1,9 @@
 import { getTableName } from "drizzle-orm";
-import { getTableConfig, PgColumn, PgTableWithColumns } from "drizzle-orm/pg-core";
+import {
+    getTableConfig,
+    PgColumn,
+    PgTableWithColumns,
+} from "drizzle-orm/pg-core";
 import { add, find, Item, list, remove, update } from "../storage/index";
 import http from "node:http";
 import { respondJSON } from "../api/index";
@@ -76,7 +80,11 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
             case "POST":
                 const item = await readAll(req, "json");
 
-                if (getTableConfig(table).columns.find(({ name }) => name === "token")) {
+                if (
+                    getTableConfig(table).columns.find(
+                        ({ name }) => name === "token",
+                    )
+                ) {
                     item.token = generateToken();
                 }
 
@@ -86,7 +94,10 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
 
                 return respondJSON(res, insertedItem);
             case "PUT":
-                const id = req.url!.split("/").at(1) as crypto.UUID;
+                const id = req
+                    .url!.split("/")
+                    .filter(Boolean)
+                    .at(1) as crypto.UUID;
                 if (!id) {
                     res.writeHead(400);
                     res.end();
@@ -102,7 +113,10 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
 
                 return respondJSON(res, updatedItem);
             case "DELETE":
-                const idToDelete = req.url!.split("/").at(1) as crypto.UUID;
+                const idToDelete = req
+                    .url!.split("/")
+                    .filter(Boolean)
+                    .at(1) as crypto.UUID;
                 if (!idToDelete) {
                     res.writeHead(400);
                     res.end();

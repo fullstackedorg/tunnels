@@ -76,9 +76,11 @@ export async function createServerHTTP() {
     registerHook(
         "get_machines",
         async (_, items: (Machine & { connected: boolean })[]) => {
-            items.forEach((machine) => {
-                machine.connected = isMachineConnected(machine);
-            });
+            await Promise.all(
+                items.map(async (machine) => {
+                    machine.connected = await isMachineConnected(machine);
+                }),
+            );
         },
     );
 }

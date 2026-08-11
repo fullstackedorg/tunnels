@@ -1,5 +1,6 @@
 import http from "node:http";
 import * as ws from "ws";
+import cluster from "node:cluster";
 import { getByToken, invalidateItem } from "../entities/index";
 import { Machine, machinesTable } from "../entities/schema/machine";
 import { createWebSocketStream, upgradeRequest } from "../utils/ws";
@@ -8,8 +9,80 @@ import { Service } from "../entities/schema/service";
 import { generateToken } from "../utils/token";
 import { executeHook } from "../utils/hooks";
 import { update } from "../storage/index";
+import * as KV from "../kv/index";
+import net from "node:net";
 
 const machineLifelines = new Map<string, ws.WebSocket>();
+
+function getWorkerId(): number | null {
+    return cluster.worker?.id ?? null;
+}
+
+function sendToParent(message: WardensInterMessage, socket?: net.Socket) {
+    process.send?.(message, socket);
+}
+
+export type WardensInterMessage =
+    | ({
+          type: "relayed_service_request";
+          targetWorkerId: number;
+      } & RelayedServiceRequest)
+    | {
+          type: "relayed_service_socket";
+          targetWorkerId: number;
+          token: string;
+          headers: http.IncomingHttpHeaders;
+          url: string | undefined;
+      };
+
+if (cluster.isWorker) {
+    process.on(
+        "message",
+        async (message: WardensInterMessage, socket?: net.Socket) => {
+            if (!message || typeof message !== "object") return;
+
+            if (message.type === "relayed_service_request") {
+                const { token, service } = message as RelayedServiceRequest & {
+                    type: string;
+                };
+
+                if (service?.machineId) {
+                    const lifeline = machineLifelines.get(service.machineId);
+                    if (lifeline) {
+                        const reqMsg: RelayedServiceRequest = {
+                            token,
+                            service,
+                        };
+                        lifeline.send(JSON.stringify(reqMsg));
+                    }
+                }
+            } else if (message.type === "relayed_service_socket" && socket) {
+                const token = message.token;
+                const relayedServiceConnection =
+                    relayedServiceRequests.get(token);
+
+                if (relayedServiceConnection) {
+                    relayedServiceRequests.delete(token);
+                    KV.del(`relayed_request:${token}`);
+                    const mockReq = Object.assign(
+                        new http.IncomingMessage(socket),
+                        {
+                            headers: message.headers || {},
+                            url: message.url || "",
+                            method: "GET",
+                            httpVersion: "1.1",
+                            httpVersionMajor: 1,
+                            httpVersionMinor: 1,
+                        },
+                    );
+                    const ws = await upgradeRequest(mockReq);
+                    const duplex = createWebSocketStream(ws);
+                    relayedServiceConnection(duplex);
+                }
+            }
+        },
+    );
+}
 
 export async function wardenRequest(req: http.IncomingMessage) {
     const token = req.headers.authorization;
@@ -24,17 +97,41 @@ export async function wardenRequest(req: http.IncomingMessage) {
 
     const relayedServiceConnection = relayedServiceRequests.get(token);
     if (relayedServiceConnection) {
+        relayedServiceRequests.delete(token);
+        KV.del(`relayed_request:${token}`);
         const ws = await upgradeRequest(req);
         const duplex = createWebSocketStream(ws);
         relayedServiceConnection(duplex);
         return req.socket.resume();
     }
 
+    const originWorkerId = await KV.get<number>(`relayed_request:${token}`);
+    if (originWorkerId !== null && originWorkerId !== getWorkerId()) {
+        req.socket.pause();
+        sendToParent(
+            {
+                type: "relayed_service_socket",
+                targetWorkerId: originWorkerId,
+                token,
+                headers: req.headers,
+                url: req.url,
+            },
+            req.socket,
+        );
+        return;
+    }
+
     req.destroy();
 }
 
-export function isMachineConnected(machine: Machine) {
-    return machineLifelines.has(machine.id);
+export async function isMachineConnected(machine: Machine) {
+    if (machineLifelines.has(machine.id)) {
+        return true;
+    }
+    const workerId = await KV.get<number | string>(
+        `machine_lifeline_${machine.id}`,
+    );
+    return workerId !== null;
 }
 
 export async function lifelineRequest(
@@ -42,13 +139,23 @@ export async function lifelineRequest(
     machine: Machine,
 ) {
     const version = (req.headers["version"] as string) || "unknown version";
-    update(machinesTable, machine.id, { version }).then(() =>
-        invalidateItem(machinesTable, machine.token),
-    );
+    update(machinesTable, machine.id, { version })
+        .then(() => invalidateItem(machinesTable, machine.token))
+        .catch(() => {});
 
     const ws = await upgradeRequest(req);
     machineLifelines.set(machine.id, ws);
-    ws.on("close", () => machineLifelines.delete(machine.id));
+    const workerId = getWorkerId();
+    await KV.set(`machine_lifeline_${machine.id}`, workerId);
+
+    const cleanup = () => {
+        machineLifelines.delete(machine.id);
+        KV.del(`machine_lifeline_${machine.id}`);
+    };
+
+    ws.on("close", cleanup);
+    ws.on("error", cleanup);
+
     await executeHook("machine_connect", req);
     req.socket.resume();
 }
@@ -60,17 +167,30 @@ export type RelayedServiceRequest = {
     service: Service;
 };
 
-export function getRelayedService(service: Service): Promise<stream.Duplex> {
+export async function getRelayedService(
+    service: Service,
+): Promise<stream.Duplex> {
     if (!service.machineId) {
         throw new Error("Service is not relayed");
     }
-    const lifeline = machineLifelines.get(service.machineId);
 
-    if (!lifeline) {
+    const workerId = getWorkerId();
+    let targetWorkerId: number | null = null;
+
+    if (machineLifelines.has(service.machineId)) {
+        targetWorkerId = workerId;
+    } else {
+        targetWorkerId = await KV.get<number>(
+            `machine_lifeline_${service.machineId}`,
+        );
+    }
+
+    if (targetWorkerId === null) {
         throw new Error("Machine is not connected");
     }
 
     const token = generateToken();
+    await KV.set(`relayed_request:${token}`, workerId);
 
     return new Promise<stream.Duplex>((resolve) => {
         relayedServiceRequests.set(token, resolve);
@@ -78,6 +198,19 @@ export function getRelayedService(service: Service): Promise<stream.Duplex> {
             token,
             service,
         };
-        lifeline.send(JSON.stringify(message));
+
+        if (targetWorkerId === workerId) {
+            const lifeline = machineLifelines.get(service.machineId!);
+            if (lifeline) {
+                lifeline.send(JSON.stringify(message));
+            }
+        } else {
+            sendToParent({
+                type: "relayed_service_request",
+                targetWorkerId,
+                token,
+                service,
+            });
+        }
     });
 }

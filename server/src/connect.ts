@@ -47,6 +47,10 @@ async function singleConnectToRelay(relayUrl: string) {
             return handleDisconnect();
         }
 
+        lifeline.on("open", () =>
+            logger.info("ConnectToRelay", `Connected to ${relayUrl}`),
+        );
+
         lifeline.on("close", handleDisconnect);
         lifeline.on("error", handleDisconnect);
         lifeline.on("message", onMessage);

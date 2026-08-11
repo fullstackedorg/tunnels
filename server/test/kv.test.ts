@@ -1,9 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert";
+import cluster from "node:cluster";
 import * as kv from "../src/kv/index";
+import {
+    cleanExpiredFileSystemKeys,
+    startCleanupInterval,
+    stopCleanupInterval,
+} from "../src/kv/filesystem";
 import { getByToken, invalidateItem } from "../src/entities/index";
 import { machinesTable } from "../src/entities/schema/machine";
 import { add, remove } from "../src/storage/index";
+import { slugify } from "../src/utils/slugify";
 
 test("KV - set, get, del operations", async () => {
     const testKey = "test:sample_key_" + Date.now();
@@ -45,6 +52,65 @@ test("KV - expiration in set function", async () => {
     // Get after expiration returns null
     const expired = await kv.get(testKey);
     assert.strictEqual(expired, null);
+});
+
+test("KV - slugify function", () => {
+    assert.strictEqual(
+        slugify("machines:token_kv_test_123"),
+        "machines-token_kv_test_123",
+    );
+    assert.strictEqual(
+        slugify("  Hello World! -- @2026/08/10  "),
+        "hello-world-2026-08-10",
+    );
+    assert.strictEqual(
+        slugify("Café & Crème / Special #1"),
+        "cafe-creme-special-1",
+    );
+    assert.strictEqual(slugify("!!!"), "file");
+    assert.strictEqual(slugify(""), "file");
+});
+
+test("KV - cleanExpiredFileSystemKeys cleans expired keys", async () => {
+    const key = "test:cleanup_exp_" + Date.now();
+    await kv.set(key, { data: "cleanup-test" }, 1);
+
+    // Immediately available
+    const immediate = await kv.get(key);
+    assert.deepStrictEqual(immediate, { data: "cleanup-test" });
+
+    // Wait 1.1 seconds for expiration
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Run cleanExpiredFileSystemKeys
+    const deletedCount = await cleanExpiredFileSystemKeys();
+    assert.ok(deletedCount >= 1);
+
+    const afterClean = await kv.get(key);
+    assert.strictEqual(afterClean, null);
+});
+
+test("KV - start and stop cleanup interval", () => {
+    const timer = startCleanupInterval(500);
+    assert.ok(timer);
+    stopCleanupInterval();
+});
+
+test("KV - startCleanupInterval only runs on primary thread", () => {
+    const originalIsWorker = cluster.isWorker;
+
+    try {
+        cluster.isWorker = true;
+        const workerTimer = startCleanupInterval(500);
+        assert.strictEqual(workerTimer, undefined);
+
+        cluster.isWorker = false;
+        const primaryTimer = startCleanupInterval(500);
+        assert.ok(primaryTimer);
+        stopCleanupInterval();
+    } finally {
+        cluster.isWorker = originalIsWorker;
+    }
 });
 
 test("KV - getByToken and invalidateItem integration", async () => {

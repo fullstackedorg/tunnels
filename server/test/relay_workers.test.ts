@@ -135,7 +135,7 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
 
         wsClient.close();
     } finally {
-        connectedProcess.kill();
+        connectedProcess.kill("SIGKILL");
         await new Promise<void>((resolve) =>
             socketServer.close(() => resolve()),
         );

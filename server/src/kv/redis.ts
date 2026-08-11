@@ -31,7 +31,7 @@ export async function initRedis(): Promise<boolean> {
     }
 }
 
-export async function getRedis<T = any>(key: string): Promise<T | null> {
+async function getRedis<T = any>(key: string): Promise<T | null> {
     if (!client) {
         throw new Error("Redis not initialized");
     }
@@ -46,7 +46,7 @@ export async function getRedis<T = any>(key: string): Promise<T | null> {
     }
 }
 
-export async function setRedis(
+async function setRedis(
     key: string,
     value: any,
     expiration?: number,
@@ -63,7 +63,7 @@ export async function setRedis(
     }
 }
 
-export async function delRedis(key: string): Promise<void> {
+async function delRedis(key: string): Promise<void> {
     if (!client) {
         throw new Error("Redis not initialized");
     }
