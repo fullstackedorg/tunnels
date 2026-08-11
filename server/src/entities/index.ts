@@ -38,7 +38,7 @@ export async function getByToken<T extends TableSchema = TableSchema>(
     table: PgTableWithColumns<T>,
     token: string | undefined,
 ): Promise<Item | null> {
-    if (token === undefined) {
+    if (!token) {
         return null;
     }
 
