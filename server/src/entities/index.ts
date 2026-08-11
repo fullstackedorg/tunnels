@@ -1,5 +1,5 @@
 import { getTableName } from "drizzle-orm";
-import { PgColumn, PgTableWithColumns } from "drizzle-orm/pg-core";
+import { getTableConfig, PgColumn, PgTableWithColumns } from "drizzle-orm/pg-core";
 import { add, find, Item, list, remove, update } from "../storage/index";
 import http from "node:http";
 import { respondJSON } from "../api/index";
@@ -75,8 +75,15 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
                 return respondJSON(res, items);
             case "POST":
                 const item = await readAll(req, "json");
-                item.token = generateToken();
+
+                if (getTableConfig(table).columns.find(({ name }) => name === "token")) {
+                    item.token = generateToken();
+                }
+
                 const insertedItem = await add(table, item);
+
+                await executeHook(`post_${tableName}`, req, insertedItem);
+
                 return respondJSON(res, insertedItem);
             case "PUT":
                 const id = req.url!.split("/").at(1) as crypto.UUID;
@@ -90,6 +97,9 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
                 if (updatedItem) {
                     await invalidateItem(table, updatedItem.token);
                 }
+
+                await executeHook(`put_${tableName}`, req, updatedItem);
+
                 return respondJSON(res, updatedItem);
             case "DELETE":
                 const idToDelete = req.url!.split("/").at(1) as crypto.UUID;
@@ -102,6 +112,9 @@ export function entityCRUD<T extends TableSchema = TableSchema>(
                 if (removedItem) {
                     await invalidateItem(table, removedItem.token);
                 }
+
+                await executeHook(`delete_${tableName}`, req, removedItem);
+
                 return respondJSON(res, { id: removedItem?.id });
         }
 
