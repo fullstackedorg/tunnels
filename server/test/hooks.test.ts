@@ -11,36 +11,52 @@ test("Hooks - stop execution using hooks (on-request, rest_api_access & on-upgra
     // 1. Register an "on-request" hook that stops execution when requesting /blocked-by-hook
     registerHook("on_request", async (req) => {
         if (req.url === "/blocked-by-hook") {
-            req.destroy();
+            req.deny();
         }
     });
 
     // 2. Register a "rest_api_access" hook that stops execution when header x-block-api is present
     registerHook("rest_api_access", async (req) => {
         if (req.headers["x-block-api"] === "true") {
-            req.destroy();
+            req.deny();
         }
     });
 
     // 3. Register an "on-upgrade" hook that stops execution when header x-block-ws is present
     registerHook("on_upgrade", async (req) => {
         if (req.headers["x-block-ws"] === "true") {
-            req.destroy();
+            req.deny();
         }
     });
 
-    // Request to /blocked-by-hook should be destroyed/stopped on-request
-    await assert.rejects(
-        fetch(`http://127.0.0.1:${PORT}/blocked-by-hook`),
-        "Request blocked by on-request hook should fail",
+    // Request to /blocked-by-hook should be destroyed/stopped on-request and return 403 Denied
+    const onRequestRes = await fetch(
+        `http://127.0.0.1:${PORT}/blocked-by-hook`,
+    );
+    assert.strictEqual(
+        onRequestRes.status,
+        403,
+        "Request blocked by on-request hook should return 403 Forbidden",
+    );
+    assert.strictEqual(
+        await onRequestRes.text(),
+        "Denied",
+        "Request blocked by on-request hook should return Denied",
     );
 
-    // Request with x-block-api header should be destroyed/stopped during rest_api_access
-    await assert.rejects(
-        fetch(`http://127.0.0.1:${PORT}/services`, {
-            headers: { "x-block-api": "true" },
-        }),
-        "Request blocked by rest_api_access hook should fail",
+    // Request with x-block-api header should be destroyed/stopped during rest_api_access and return 403 Denied
+    const restApiRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
+        headers: { "x-block-api": "true" },
+    });
+    assert.strictEqual(
+        restApiRes.status,
+        403,
+        "Request blocked by rest_api_access hook should return 403 Forbidden",
+    );
+    assert.strictEqual(
+        await restApiRes.text(),
+        "Denied",
+        "Request blocked by rest_api_access hook should return Denied",
     );
 
     // Normal requests without blocking conditions should proceed normally

@@ -233,6 +233,6 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         );
         await fs.promises
             .rm(testDataDir, { recursive: true, force: true })
-            .catch(() => { });
+            .catch(() => {});
     }
 });

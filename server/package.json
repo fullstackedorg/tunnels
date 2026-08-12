@@ -1,5 +1,5 @@
 {
-    "version": "0.0.1-main.9",
+    "version": "0.0.1-main.13",
     "scripts": {
         "start": "node -r @nitrogql/esbuild-register src/main.ts",
         "test": "node -r @nitrogql/esbuild-register --test test/*.test.ts",

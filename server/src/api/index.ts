@@ -1,6 +1,7 @@
 import http from "node:http";
 import { executeHook } from "../utils/hooks";
 import { logger } from "../utils/logger";
+import { IncomingMessageWithDeny } from "../http";
 
 const notFoundData = Buffer.from("Not Found");
 
@@ -15,7 +16,7 @@ function notFound(res: http.ServerResponse) {
 type Route = {
     prefix: string;
     handler: (
-        req: http.IncomingMessage,
+        req: IncomingMessageWithDeny,
         res: http.ServerResponse,
     ) => Promise<boolean> | boolean;
 };
@@ -51,13 +52,12 @@ export function respondJSON(res: http.ServerResponse, data: any) {
 }
 
 export async function restApiRequest(
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     res: http.ServerResponse,
 ) {
     await executeHook("rest_api_access", req);
 
     if (req.destroyed) {
-        res.end();
         return;
     }
 
@@ -71,6 +71,6 @@ export async function restApiRequest(
         }
     }
 
-    logger.info("API", `Path not handled, respond not found [${req.url}]`)
+    logger.info("API", `Path not handled, respond not found [${req.url}]`);
     notFound(res);
 }

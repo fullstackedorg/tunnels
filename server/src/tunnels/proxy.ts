@@ -4,11 +4,12 @@ import { pipeline } from "node:stream";
 import { type Proxy } from "../entities/schema/proxy";
 import { logger } from "../utils/logger";
 import { executeHook } from "../utils/hooks";
+import { IncomingMessageWithDeny } from "../http";
 
 const Component = "Tunnel Proxy";
 
 export function tunnelProxy(
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     proxy: Proxy,
     res: http.ServerResponse,
 ) {

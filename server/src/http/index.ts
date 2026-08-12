@@ -14,12 +14,35 @@ import { machinesTable, Machine } from "../entities/schema/machine";
 
 const Component = "HTTP Server";
 
-async function onRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+const deniedRawResponse = [
+    "HTTP/1.1 403 Forbidden",
+    "Connection: close",
+    "Content-Type: text/plain",
+    "", // Blank line separating headers from body
+    "Denied", // Response body
+].join("\r\n");
+
+export type IncomingMessageWithDeny = http.IncomingMessage & {
+    deny: () => void
+};
+
+function addDenyFunction(req: http.IncomingMessage) {
+    (req as IncomingMessageWithDeny).deny = () => {
+        req.socket.write(deniedRawResponse, () => {
+            req.socket.end();
+        });
+        req.destroy();
+    };
+}
+
+async function onRequest(req: IncomingMessageWithDeny, res: http.ServerResponse) {
+    addDenyFunction(req);
+
     await executeHook("on_request", req);
 
     if (req.destroyed) {
         logger.info(Component, `Request destroyed in onRequest: ${req.url}`);
-        return res.end();
+        return;
     }
 
     logger.info(Component, `on request: ${req.url}`);
@@ -32,14 +55,16 @@ async function onRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     return restApiRequest(req, res);
 }
 
-async function onUpgrade(req: http.IncomingMessage) {
+async function onUpgrade(req: IncomingMessageWithDeny) {
+    addDenyFunction(req);
+
     req.socket.pause();
 
     await executeHook("on_upgrade", req);
 
     if (req.destroyed) {
         logger.info(Component, `Request destroyed in onUpgrade: ${req.url}`);
-        return req.socket.end();
+        return;
     }
 
     logger.info("HTTP Server", `on upgrade: ${req.url}`);

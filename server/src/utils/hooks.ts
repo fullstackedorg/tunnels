@@ -1,8 +1,8 @@
-import http from "node:http";
 import { logger } from "./logger";
+import { IncomingMessageWithDeny } from "../http";
 
 type HookFunction = (
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     ...args: any[]
 ) => Promise<void> | void;
 
@@ -19,7 +19,7 @@ export function registerHook(hook: string, func: HookFunction) {
 async function executeHookAsync(
     firstPromise: Promise<void>,
     funcs: HookFunction[],
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     ...args: any[]
 ) {
     await firstPromise;
@@ -33,7 +33,7 @@ async function executeHookAsync(
 
 export function executeHook(
     hook: string,
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     ...args: any[]
 ): Promise<void> | void {
     const funcs = hooks.get(hook);

@@ -12,9 +12,9 @@ import { generateToken } from "../utils/token";
 import crypto from "node:crypto";
 import { logger } from "../utils/logger";
 import * as kv from "../kv/index";
-
 import { ColumnBaseConfig } from "drizzle-orm";
 import { executeHook } from "../utils/hooks";
+import { IncomingMessageWithDeny } from "../http";
 
 export type TableSchema = {
     name: string;
@@ -65,7 +65,7 @@ export async function getByToken<T extends TableSchema = TableSchema>(
 export function entityCRUD<T extends TableSchema = TableSchema>(
     table: PgTableWithColumns<T>,
 ) {
-    return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    return async (req: IncomingMessageWithDeny, res: http.ServerResponse) => {
         const tableName = getTableName(table);
         logger.info(
             "Entity",

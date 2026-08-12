@@ -12,6 +12,7 @@ import { update } from "../storage/index";
 import { logger } from "../utils/logger";
 import net from "node:net";
 import * as KV from "../kv/index";
+import { IncomingMessageWithDeny } from "../http";
 
 const machineLifelines = new Map<string, ws.WebSocket>();
 
@@ -25,16 +26,16 @@ function sendToParent(message: WardenMessageIPC, socket?: net.Socket) {
 
 export type WardenMessageIPC =
     | ({
-          type: "relayed_service_request";
-          targetWorkerId: number;
-      } & RelayedServiceRequest)
+        type: "relayed_service_request";
+        targetWorkerId: number;
+    } & RelayedServiceRequest)
     | {
-          type: "relayed_service_socket";
-          targetWorkerId: number;
-          token: string;
-          headers: http.IncomingHttpHeaders;
-          url: string | undefined;
-      };
+        type: "relayed_service_socket";
+        targetWorkerId: number;
+        token: string;
+        headers: http.IncomingHttpHeaders;
+        url: string | undefined;
+    };
 
 if (cluster.isWorker) {
     process.on(
@@ -85,7 +86,7 @@ if (cluster.isWorker) {
                             httpVersionMajor: 1,
                             httpVersionMinor: 1,
                         },
-                    );
+                    ) as IncomingMessageWithDeny;
                     const ws = await upgradeRequest(mockReq);
                     const duplex = createWebSocketStream(ws);
                     relayedServiceConnection(duplex);
@@ -96,10 +97,10 @@ if (cluster.isWorker) {
     );
 }
 
-export async function wardenRequest(req: http.IncomingMessage) {
+export async function wardenRequest(req: IncomingMessageWithDeny) {
     const token = req.headers.authorization;
     if (!token) {
-        return req.destroy();
+        return req.deny();
     }
 
     const machine = (await getByToken(machinesTable, token)) as Machine | null;
@@ -133,7 +134,7 @@ export async function wardenRequest(req: http.IncomingMessage) {
         return;
     }
 
-    req.destroy();
+    req.deny();
 }
 
 export async function isMachineConnected(machine: Machine) {
@@ -145,13 +146,13 @@ export async function isMachineConnected(machine: Machine) {
 }
 
 export async function lifelineRequest(
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     machine: Machine,
 ) {
     const version = (req.headers["version"] as string) || "unknown version";
     update(machinesTable, machine.id, { version })
         .then(() => invalidateItem(machinesTable, machine.token))
-        .catch(() => {});
+        .catch(() => { });
 
     const ws = await upgradeRequest(req);
     machineLifelines.set(machine.id, ws);

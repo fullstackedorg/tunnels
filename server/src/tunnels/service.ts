@@ -2,22 +2,22 @@ import net from "node:net";
 import { pipeline } from "node:stream";
 import { Service } from "../entities/schema/service";
 import { logger } from "../utils/logger";
-import http from "node:http";
 import { getByToken } from "../entities/index";
 import { servicesTable } from "../entities/schema/service";
 import { createWebSocketStream, upgradeRequest } from "../utils/ws";
 import { getRelayedService } from "../warden/index";
 import { executeHook } from "../utils/hooks";
+import { IncomingMessageWithDeny } from "../http";
 
 const Component = "Tunnel Service";
 
-export async function isRequestForTunnelService(req: http.IncomingMessage) {
+export async function isRequestForTunnelService(req: IncomingMessageWithDeny) {
     const authorization = req.headers.authorization;
     return !!(await getByToken(servicesTable, authorization));
 }
 
 export async function tunnelService(
-    req: http.IncomingMessage,
+    req: IncomingMessageWithDeny,
     service: Service,
 ) {
     const ws = await upgradeRequest(req);
