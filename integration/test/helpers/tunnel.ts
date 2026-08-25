@@ -106,7 +106,7 @@ export async function startTunnelServer(
         }
     );
 
-    relayWorker = new Worker(path.join(currentDirectory, "../../../server/out/index.mjs"), {
+    relayWorker = new Worker(path.join(currentDirectory, "../../../server/dist/index.mjs"), {
         env: {
             PORT: port.toString(),
             DATA_DIR: dataDir
@@ -133,7 +133,7 @@ export async function startTunnelServer(
         const { id, token } = await machineRes.json();
         machineId = id;
 
-        machineWorker = new Worker(path.join(currentDirectory, "../../../server/out/index.mjs"), {
+        machineWorker = new Worker(path.join(currentDirectory, "../../../server/dist/index.mjs"), {
             env: {
                 TOKEN: token,
                 RELAY_URL: `http://127.0.0.1:${port}`
