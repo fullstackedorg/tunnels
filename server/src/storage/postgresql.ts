@@ -2,7 +2,7 @@ import { getEnvOrArgCLI } from "../utils/args.ts";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { PgTableWithColumns } from "drizzle-orm/pg-core";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import crypto from "node:crypto";
 import type { Item, StorageProvider, WhereValue } from "./interface.ts";
 
@@ -49,7 +49,9 @@ export class PostgreSQLStorageProvider implements StorageProvider {
             .where(
                 and(
                     ...whereArr.map(({ column, value }) =>
-                        eq(table[column], value),
+                        value === null || value === undefined
+                            ? isNull(table[column])
+                            : eq(table[column], value),
                     ),
                 ),
             ) as unknown as Promise<Item[]>;

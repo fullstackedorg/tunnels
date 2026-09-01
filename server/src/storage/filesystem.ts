@@ -176,7 +176,10 @@ export class FileSystemStorageProvider implements StorageProvider {
         return collection
             .all()
             .filter((row) =>
-                whereArr.every(({ column, value }) => row[column] === value),
+                whereArr.every(
+                    ({ column, value }) =>
+                        (row[column] ?? null) === (value ?? null),
+                ),
             );
     }
 
