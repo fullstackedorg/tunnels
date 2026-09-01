@@ -4,9 +4,9 @@ import net from "node:net";
 import * as ws from "ws";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { registerHook } from "../src/utils/hooks";
-import { setupTestServer } from "./helpers";
-import * as kv from "../src/kv/index";
+import { registerHook } from "../src/utils/hooks.ts";
+import { setupTestServer } from "./helpers.ts";
+import * as kv from "../src/kv/index.ts";
 
 const PORT = 3461;
 process.env.ALLOW_FILESYSTEM_MULTIWORKER = "1";
@@ -58,8 +58,7 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
 
     // 3. Start Connected-to-Relay machine process with --workers 2
     const connectedProcess = spawn(process.execPath, [
-        "-r",
-        "@nitrogql/esbuild-register",
+        "--experimental-strip-types",
         path.resolve("./src/main.ts"),
         "--relay-url",
         `ws://127.0.0.1:${PORT}`,

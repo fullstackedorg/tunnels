@@ -61,7 +61,7 @@ export async function startFullStacked(timeoutMs = 60000) {
             } catch { }
 
             try {
-                execSync(`node -r @nitrogql/esbuild-register "${path.resolve(currentDirectory, "../../fullstacked/build.ts")}"`, {
+                execSync(`node --experimental-strip-types "${path.resolve(currentDirectory, "../../fullstacked/build.ts")}"`, {
                     stdio: "inherit",
                     cwd: path.resolve(currentDirectory, "../../fullstacked")
                 });
@@ -70,7 +70,7 @@ export async function startFullStacked(timeoutMs = 60000) {
             }
 
             try {
-                execSync(`node -r @nitrogql/esbuild-register "${path.resolve(currentDirectory, "../../fullstacked/platform/node/build.ts")}"`, {
+                execSync(`node --experimental-strip-types "${path.resolve(currentDirectory, "../../fullstacked/platform/node/build.ts")}"`, {
                     stdio: "inherit",
                     cwd: path.resolve(currentDirectory, "../../fullstacked/platform/node")
                 });

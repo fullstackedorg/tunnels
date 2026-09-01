@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { before, after, suite, test } from "node:test";
-import { startDockerCompose, stopDockerCompose } from "./helpers/compose";
-import { startFullStacked, stopFullStacked, runTestWithFullStacked } from "./helpers/fullstacked";
+import { startDockerCompose, stopDockerCompose } from "./helpers/compose.ts";
+import { startFullStacked, stopFullStacked, runTestWithFullStacked } from "./helpers/fullstacked.ts";
 import { addProxy, addService, startTunnelServer, stopTunnelServer } from "./helpers/tunnel.ts";
 import { randomPort } from "./helpers/port.ts";
 import path from "node:path";

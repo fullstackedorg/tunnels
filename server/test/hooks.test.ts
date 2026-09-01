@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert";
 import * as ws from "ws";
-import { registerHook } from "../src/utils/hooks";
-import { setupTestServer } from "./helpers";
+import { registerHook } from "../src/utils/hooks.ts";
+import { setupTestServer } from "./helpers.ts";
 
 const PORT = 3459;
 await setupTestServer(PORT);

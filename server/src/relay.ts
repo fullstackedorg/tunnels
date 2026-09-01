@@ -1,8 +1,8 @@
 import cluster from "node:cluster";
-import { getEnvOrArgCLI } from "./utils/args";
-import { createServerHTTP, stopServerHTTP } from "./http/index";
-import { logger } from "./utils/logger";
-import { WardenMessageIPC } from "./warden";
+import { getEnvOrArgCLI } from "./utils/args.ts";
+import { createServerHTTP, stopServerHTTP } from "./http/index.ts";
+import { logger } from "./utils/logger.ts";
+import type { WardenMessageIPC } from "./warden/index.ts";
 import net from "node:net";
 
 let workers: cluster.Worker[] | null = null;

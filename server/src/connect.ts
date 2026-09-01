@@ -3,17 +3,33 @@
 import * as ws from "ws";
 import net from "node:net";
 import { pipeline } from "node:stream";
-import { getEnvOrArgCLI } from "./utils/args";
+import { getEnvOrArgCLI } from "./utils/args.ts";
 import packageJSON from "../package.json" with { type: "json" };
-import { RelayedServiceRequest } from "./warden";
-import { createWebSocketStream } from "./utils/ws";
+import type { RelayedServiceRequest } from "./warden/index.ts";
+import { createWebSocketStream } from "./utils/ws.ts";
 import cluster from "node:cluster";
-import { logger } from "./utils/logger";
+import { logger } from "./utils/logger.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export type HeartbeatStatus = {
+    alive: boolean;
+    lastHeartbeat: number | null;
+    latency?: number | null;
+};
+
 let lifeline: ws.WebSocket | null = null;
 let shouldConnect = true;
+
+let heartbeatStatus: HeartbeatStatus = {
+    alive: false,
+    lastHeartbeat: null,
+    latency: null,
+};
+
+export function getHeartbeatStatus(): HeartbeatStatus {
+    return { ...heartbeatStatus };
+}
 
 let nextWorkerIndex = 0;
 let workers: cluster.Worker[] | null = null;
@@ -33,34 +49,107 @@ async function singleConnectToRelay(relayUrl: string) {
     }
 
     const url = new URL(relayUrl);
+    const heartbeatInterval =
+        getEnvOrArgCLI(
+            ["HEARTBEAT_INTERVAL", "heartbeat-interval"],
+            "number",
+        ) ?? 10000;
+
+    let heartbeatTimer: NodeJS.Timeout | null = null;
+    let isAlive = true;
+    let pingSentTime: number | null = null;
 
     await new Promise<void>((resolve) => {
+        let isResolved = false;
+        let wsInstance: ws.WebSocket | null = null;
+
         const handleDisconnect = () => {
-            if (lifeline === null) return;
-            lifeline = null;
-            resolve();
+            if (heartbeatTimer !== null) {
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+            }
+            heartbeatStatus = {
+                alive: false,
+                lastHeartbeat: heartbeatStatus.lastHeartbeat,
+                latency: null,
+            };
+            if (lifeline === wsInstance) {
+                lifeline = null;
+            }
+            if (!isResolved) {
+                isResolved = true;
+                resolve();
+            }
         };
 
         try {
-            lifeline = new ws.WebSocket(url, { headers });
+            wsInstance = new ws.WebSocket(url, { headers });
+            lifeline = wsInstance;
         } catch {
             return handleDisconnect();
         }
 
-        lifeline.on("open", () =>
-            logger.info("ConnectToRelay", `Connected to ${relayUrl}`),
-        );
+        wsInstance.on("open", () => {
+            logger.info("ConnectToRelay", `Connected to ${relayUrl}`);
+            isAlive = true;
+            heartbeatStatus = {
+                alive: true,
+                lastHeartbeat: Date.now(),
+                latency: null,
+            };
 
-        lifeline.on("close", handleDisconnect);
-        lifeline.on("error", handleDisconnect);
-        lifeline.on("message", onMessage);
+            heartbeatTimer = setInterval(() => {
+                if (!isAlive) {
+                    logger.warn(
+                        "ConnectToRelay",
+                        "Lifeline heartbeat missed, terminating connection",
+                    );
+                    wsInstance?.terminate();
+                    return;
+                }
+
+                isAlive = false;
+                pingSentTime = Date.now();
+                wsInstance?.ping();
+            }, heartbeatInterval);
+        });
+
+        wsInstance.on("pong", () => {
+            isAlive = true;
+            const now = Date.now();
+            const latency = pingSentTime ? now - pingSentTime : null;
+            heartbeatStatus = {
+                alive: true,
+                lastHeartbeat: now,
+                latency,
+            };
+        });
+
+        wsInstance.on("ping", () => {
+            isAlive = true;
+            heartbeatStatus = {
+                alive: true,
+                lastHeartbeat: Date.now(),
+                latency: heartbeatStatus.latency,
+            };
+        });
+
+        wsInstance.on("close", handleDisconnect);
+        wsInstance.on("error", handleDisconnect);
+        wsInstance.on("message", onMessage);
     });
 }
 
 export function stopConnectToRelay() {
     shouldConnect = false;
-    lifeline?.close();
+    heartbeatStatus = {
+        alive: false,
+        lastHeartbeat: null,
+        latency: null,
+    };
+    const current = lifeline;
     lifeline = null;
+    current?.terminate();
     workers?.forEach((w) => w.kill());
     workers = null;
 }
@@ -68,6 +157,7 @@ export function stopConnectToRelay() {
 let relayUrl: string | undefined;
 
 export async function connectToRelay() {
+    shouldConnect = true;
     relayUrl = getEnvOrArgCLI(["RELAY_URL", "relay-url"], "string");
     if (!relayUrl) {
         throw new Error("Relay URL is required");
@@ -104,6 +194,7 @@ export async function connectToRelay() {
 
     while (shouldConnect) {
         await singleConnectToRelay(relayUrl);
+        if (!shouldConnect) break;
         await sleep(reconnectInterval);
     }
 }

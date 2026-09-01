@@ -1,14 +1,15 @@
-import { initRedis, RedisKVProvider } from "./redis";
-import { FileSystemKVProvider } from "./filesystem";
-import { logger } from "../utils/logger";
-import { KVProvider } from "./interface";
+import { initRedis, RedisKVProvider } from "./redis.ts";
+import { FileSystemKVProvider } from "./filesystem.ts";
+import { logger } from "../utils/logger.ts";
+import type { KVProvider } from "./interface.ts";
 
-export * from "./interface";
+export * from "./interface.ts";
 
-export enum KVType {
-    FileSystem = "filesystem",
-    Redis = "redis",
-}
+export const KVType = {
+    FileSystem: "filesystem",
+    Redis: "redis",
+} as const;
+export type KVType = (typeof KVType)[keyof typeof KVType];
 
 export const kvType = (await initRedis()) ? KVType.Redis : KVType.FileSystem;
 

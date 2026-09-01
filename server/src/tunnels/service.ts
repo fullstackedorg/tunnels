@@ -1,13 +1,13 @@
 import net from "node:net";
 import { pipeline } from "node:stream";
-import { Service } from "../entities/schema/service";
-import { logger } from "../utils/logger";
-import { getByToken } from "../entities/index";
-import { servicesTable } from "../entities/schema/service";
-import { createWebSocketStream, upgradeRequest } from "../utils/ws";
-import { getRelayedService } from "../warden/index";
-import { executeHook } from "../utils/hooks";
-import { IncomingMessageWithDeny } from "../http";
+import { type Service } from "../entities/schema/service.ts";
+import { logger } from "../utils/logger.ts";
+import { getByToken } from "../entities/index.ts";
+import { servicesTable } from "../entities/schema/service.ts";
+import { createWebSocketStream, upgradeRequest } from "../utils/ws.ts";
+import { getRelayedService } from "../warden/index.ts";
+import { executeHook } from "../utils/hooks.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 const Component = "Tunnel Service";
 

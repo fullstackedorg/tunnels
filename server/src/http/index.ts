@@ -1,16 +1,21 @@
 import http from "node:http";
-import { registerRoute, restApiRequest } from "../api/index";
-import { getEnvOrArgCLI } from "../utils/args";
-import { logger } from "../utils/logger";
-import { isMachineConnected, wardenRequest } from "../warden/index";
-import { executeHook, registerHook } from "../utils/hooks";
-import { getRequestTunnelItem } from "../tunnels/index";
-import { tunnelProxy } from "../tunnels/proxy";
-import { proxiesTable, Proxy } from "../entities/schema/proxy";
-import { Service, servicesTable } from "../entities/schema/service";
-import { tunnelService } from "../tunnels/service";
-import { entityCRUD } from "../entities/index";
-import { machinesTable, Machine } from "../entities/schema/machine";
+import { registerRoute, restApiRequest } from "../api/index.ts";
+import { getEnvOrArgCLI } from "../utils/args.ts";
+import { logger } from "../utils/logger.ts";
+import { executeHook, registerHook } from "../utils/hooks.ts";
+import {
+    getMachineHeartbeatStatus,
+    isMachineConnected,
+    wardenRequest,
+    type HeartbeatStatus,
+} from "../warden/index.ts";
+import { getRequestTunnelItem } from "../tunnels/index.ts";
+import { tunnelProxy } from "../tunnels/proxy.ts";
+import { proxiesTable, type Proxy } from "../entities/schema/proxy.ts";
+import { servicesTable, type Service } from "../entities/schema/service.ts";
+import { tunnelService } from "../tunnels/service.ts";
+import { entityCRUD } from "../entities/index.ts";
+import { machinesTable, type Machine } from "../entities/schema/machine.ts";
 
 const Component = "HTTP Server";
 
@@ -23,7 +28,7 @@ const deniedRawResponse = [
 ].join("\r\n");
 
 export type IncomingMessageWithDeny = http.IncomingMessage & {
-    deny: () => void
+    deny: () => void;
 };
 
 function addDenyFunction(req: http.IncomingMessage) {
@@ -35,7 +40,10 @@ function addDenyFunction(req: http.IncomingMessage) {
     };
 }
 
-async function onRequest(req: IncomingMessageWithDeny, res: http.ServerResponse) {
+async function onRequest(
+    req: IncomingMessageWithDeny,
+    res: http.ServerResponse,
+) {
     addDenyFunction(req);
 
     await executeHook("on_request", req);
@@ -100,10 +108,19 @@ export async function createServerHTTP() {
     registerRoute("/machines", entityCRUD(machinesTable));
     registerHook(
         "get_machines",
-        async (_, items: (Machine & { connected: boolean })[]) => {
+        async (
+            _,
+            items: (Machine & {
+                connected: boolean;
+                heartbeat?: HeartbeatStatus | null;
+            })[],
+        ) => {
             await Promise.all(
                 items.map(async (machine) => {
                     machine.connected = await isMachineConnected(machine);
+                    machine.heartbeat = await getMachineHeartbeatStatus(
+                        machine.id,
+                    );
                 }),
             );
         },

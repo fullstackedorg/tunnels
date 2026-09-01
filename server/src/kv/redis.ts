@@ -1,7 +1,7 @@
 import { createClient } from "redis";
-import { getEnvOrArgCLI } from "../utils/args";
-import { logger } from "../utils/logger";
-import { KVProvider } from "./interface";
+import { getEnvOrArgCLI } from "../utils/args.ts";
+import { logger } from "../utils/logger.ts";
+import type { KVProvider } from "./interface.ts";
 
 type RedisClientType = ReturnType<typeof createClient>;
 let client: RedisClientType | null = null;

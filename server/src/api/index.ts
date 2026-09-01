@@ -1,7 +1,7 @@
 import http from "node:http";
-import { executeHook } from "../utils/hooks";
-import { logger } from "../utils/logger";
-import { IncomingMessageWithDeny } from "../http";
+import { executeHook } from "../utils/hooks.ts";
+import { logger } from "../utils/logger.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 const notFoundData = Buffer.from("Not Found");
 

@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, integer } from "drizzle-orm/pg-core";
-import { machinesTable } from "./machine";
+import { machinesTable } from "./machine.ts";
 import crypto from "node:crypto";
 
 export const servicesTable = pgTable("services", {

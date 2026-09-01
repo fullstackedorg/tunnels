@@ -4,8 +4,8 @@ import net from "node:net";
 import * as ws from "ws";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { registerHook } from "../src/utils/hooks";
-import { setupTestServer } from "./helpers";
+import { registerHook } from "../src/utils/hooks.ts";
+import { setupTestServer } from "./helpers.ts";
 
 const PORT = 3460;
 await setupTestServer(PORT);
@@ -62,8 +62,7 @@ test("Relay e2e round-trip - relay process & connected-to-relay machine process"
 
     // 3. Start a Connected-to-Relay machine process via child_process.spawn
     const connectedProcess = spawn(process.execPath, [
-        "-r",
-        "@nitrogql/esbuild-register",
+        "--experimental-strip-types",
         path.resolve("./src/main.ts"),
         "--relay-url",
         `ws://127.0.0.1:${PORT}`,

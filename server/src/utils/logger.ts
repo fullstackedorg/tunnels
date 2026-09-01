@@ -1,4 +1,4 @@
-import { getEnvOrArgCLI } from "./args";
+import { getEnvOrArgCLI } from "./args.ts";
 
 export interface Breadcrumb {
     timestamp: string;

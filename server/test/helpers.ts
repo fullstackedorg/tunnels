@@ -8,7 +8,7 @@ export async function setupTestServer(port: number) {
     process.env.DATA_DIR = testDataDir;
     process.env.QUIET = "1";
 
-    const server = await import("../src/index");
+    const server = await import("../src/index.ts");
     await server.start();
 
     after(async () => {

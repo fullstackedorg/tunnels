@@ -9,7 +9,7 @@ import pg from "pg";
 import { createClient } from "redis";
 import mysql from "mysql2/promise";
 
-import { tmpDir } from "./paths";
+import { tmpDir } from "./paths.ts";
 import { acquireLock, getActivePids, registerProcess, unregisterProcess, runOnce, getProcessIdentifier, clearState } from "./lock.ts";
 
 const composeFile = "compose.yml";

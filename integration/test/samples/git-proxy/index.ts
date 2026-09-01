@@ -1,6 +1,6 @@
 import git from "fullstacked/git";
 import fs from "node:fs";
-import { readTestFile } from "../git-server/test.common";
+import { readTestFile } from "../git-server/test.common.ts";
 
 const dir = globalThis.testData;
 if (fs.existsSync(dir)) {

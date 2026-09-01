@@ -1,7 +1,7 @@
-import { proxiesTable } from "../entities/schema/proxy";
-import { getByToken } from "../entities/index";
-import { servicesTable } from "../entities/schema/service";
-import { IncomingMessageWithDeny } from "../http";
+import { proxiesTable } from "../entities/schema/proxy.ts";
+import { getByToken } from "../entities/index.ts";
+import { servicesTable } from "../entities/schema/service.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 export type TunnelType = "proxy" | "service";
 

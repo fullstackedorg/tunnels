@@ -1,20 +1,43 @@
 import http from "node:http";
 import * as ws from "ws";
 import cluster from "node:cluster";
-import { getByToken, invalidateItem } from "../entities/index";
-import { Machine, machinesTable } from "../entities/schema/machine";
-import { createWebSocketStream, upgradeRequest } from "../utils/ws";
+import { getByToken, invalidateItem } from "../entities/index.ts";
+import { machinesTable, type Machine } from "../entities/schema/machine.ts";
+import { createWebSocketStream, upgradeRequest } from "../utils/ws.ts";
 import * as stream from "node:stream";
-import { Service } from "../entities/schema/service";
-import { generateToken } from "../utils/token";
-import { executeHook } from "../utils/hooks";
-import { update } from "../storage/index";
-import { logger } from "../utils/logger";
+import { type Service } from "../entities/schema/service.ts";
+import { generateToken } from "../utils/token.ts";
+import { executeHook } from "../utils/hooks.ts";
+import { update } from "../storage/index.ts";
+import { logger } from "../utils/logger.ts";
 import net from "node:net";
-import * as KV from "../kv/index";
-import { IncomingMessageWithDeny } from "../http";
+import * as KV from "../kv/index.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
+import { getEnvOrArgCLI } from "../utils/args.ts";
+
+export type HeartbeatStatus = {
+    alive: boolean;
+    lastHeartbeat: number | null;
+    latency?: number | null;
+};
 
 const machineLifelines = new Map<string, ws.WebSocket>();
+const machineHeartbeats = new Map<string, HeartbeatStatus>();
+
+export async function getMachineHeartbeatStatus(
+    machineId: string,
+): Promise<HeartbeatStatus | null> {
+    if (machineHeartbeats.has(machineId)) {
+        return machineHeartbeats.get(machineId)!;
+    }
+    return KV.get<HeartbeatStatus>(`machine_heartbeat_${machineId}`);
+}
+
+export function getLocalMachineHeartbeatStatus(
+    machineId: string,
+): HeartbeatStatus | null {
+    return machineHeartbeats.get(machineId) ?? null;
+}
 
 function getWorkerId(): number {
     return cluster.worker?.id ?? 0;
@@ -26,16 +49,16 @@ function sendToParent(message: WardenMessageIPC, socket?: net.Socket) {
 
 export type WardenMessageIPC =
     | ({
-        type: "relayed_service_request";
-        targetWorkerId: number;
-    } & RelayedServiceRequest)
+          type: "relayed_service_request";
+          targetWorkerId: number;
+      } & RelayedServiceRequest)
     | {
-        type: "relayed_service_socket";
-        targetWorkerId: number;
-        token: string;
-        headers: http.IncomingHttpHeaders;
-        url: string | undefined;
-    };
+          type: "relayed_service_socket";
+          targetWorkerId: number;
+          token: string;
+          headers: http.IncomingHttpHeaders;
+          url: string | undefined;
+      };
 
 if (cluster.isWorker) {
     process.on(
@@ -152,16 +175,77 @@ export async function lifelineRequest(
     const version = (req.headers["version"] as string) || "unknown version";
     update(machinesTable, machine.id, { version })
         .then(() => invalidateItem(machinesTable, machine.token))
-        .catch(() => { });
+        .catch(() => {});
 
     const ws = await upgradeRequest(req);
     machineLifelines.set(machine.id, ws);
     const workerId = getWorkerId();
     await KV.set(`machine_lifeline_${machine.id}`, workerId);
 
-    const cleanup = () => {
+    const initialStatus: HeartbeatStatus = {
+        alive: true,
+        lastHeartbeat: Date.now(),
+        latency: null,
+    };
+    machineHeartbeats.set(machine.id, initialStatus);
+    await KV.set(`machine_heartbeat_${machine.id}`, initialStatus);
+
+    const heartbeatInterval =
+        getEnvOrArgCLI(
+            ["HEARTBEAT_INTERVAL", "heartbeat-interval"],
+            "number",
+        ) ?? 10000;
+
+    let isAlive = true;
+    let pingSentTime: number | null = null;
+
+    const heartbeatTimer = setInterval(async () => {
+        if (!isAlive) {
+            logger.warn(
+                "Warden",
+                `Heartbeat missed for machine ${machine.id}, terminating lifeline`,
+            );
+            ws.terminate();
+            return;
+        }
+
+        isAlive = false;
+        pingSentTime = Date.now();
+        ws.ping();
+    }, heartbeatInterval);
+
+    ws.on("pong", async () => {
+        isAlive = true;
+        const now = Date.now();
+        const latency = pingSentTime ? now - pingSentTime : null;
+        const status: HeartbeatStatus = {
+            alive: true,
+            lastHeartbeat: now,
+            latency,
+        };
+        machineHeartbeats.set(machine.id, status);
+        await KV.set(`machine_heartbeat_${machine.id}`, status);
+    });
+
+    ws.on("ping", async () => {
+        isAlive = true;
+        const now = Date.now();
+        const prev = machineHeartbeats.get(machine.id);
+        const status: HeartbeatStatus = {
+            alive: true,
+            lastHeartbeat: now,
+            latency: prev?.latency ?? null,
+        };
+        machineHeartbeats.set(machine.id, status);
+        await KV.set(`machine_heartbeat_${machine.id}`, status);
+    });
+
+    const cleanup = async () => {
+        clearInterval(heartbeatTimer);
         machineLifelines.delete(machine.id);
-        KV.del(`machine_lifeline_${machine.id}`);
+        machineHeartbeats.delete(machine.id);
+        await KV.del(`machine_lifeline_${machine.id}`);
+        await KV.del(`machine_heartbeat_${machine.id}`);
     };
 
     ws.on("close", cleanup);

@@ -1,17 +1,18 @@
-import { PgTableWithColumns } from "drizzle-orm/pg-core";
+import type { PgTableWithColumns } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
-import { initPostgreSQL, PostgreSQLStorageProvider } from "./postgresql";
-import { FileSystemStorageProvider } from "./filesystem";
-import { logger } from "../utils/logger";
-import { StorageProvider, Item, WhereValue } from "./interface";
-import { getEnvOrArgCLI } from "../utils/args";
+import { initPostgreSQL, PostgreSQLStorageProvider } from "./postgresql.ts";
+import { FileSystemStorageProvider } from "./filesystem.ts";
+import { logger } from "../utils/logger.ts";
+import type { StorageProvider, Item, WhereValue } from "./interface.ts";
+import { getEnvOrArgCLI } from "../utils/args.ts";
 
-export * from "./interface";
+export * from "./interface.ts";
 
-export enum StorageType {
-    FileSystem = "filesystem",
-    PostgreSQL = "postgresql",
-}
+export const StorageType = {
+    FileSystem: "filesystem",
+    PostgreSQL: "postgresql",
+} as const;
+export type StorageType = (typeof StorageType)[keyof typeof StorageType];
 
 export const storageType = (await initPostgreSQL())
     ? StorageType.PostgreSQL

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert";
 import http from "node:http";
 import net from "node:net";
-import { setupTestServer } from "./helpers";
+import { setupTestServer } from "./helpers.ts";
 
 const PORT = 3458;
 await setupTestServer(PORT);

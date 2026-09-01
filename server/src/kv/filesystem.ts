@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
 import cluster from "node:cluster";
-import { getEnvOrArgCLI } from "../utils/args";
-import { KVProvider } from "./interface";
-import { logger } from "../utils/logger";
-import { slugify } from "../utils/slugify";
+import { getEnvOrArgCLI } from "../utils/args.ts";
+import type { KVProvider } from "./interface.ts";
+import { logger } from "../utils/logger.ts";
+import { slugify } from "../utils/slugify.ts";
 
 const dataDirectory =
     getEnvOrArgCLI(["DATA_DIR", "data-dir", "d"], "string") || "data";

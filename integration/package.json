@@ -2,19 +2,15 @@
   "type": "module",
   "scripts": {
     "pretest": "node -e \"require('fs').rmSync('.tmp/', { recursive: true, force: true })\"",
-    "test": "node -r @nitrogql/esbuild-register --test test/*.test.ts"
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1104.0",
-    "@nitrogql/esbuild-register": "^1.7.2",
-    "@types/jsdom": "^28.0.3",
-    "@types/xmldom": "^0.1.34",
-    "@xmldom/xmldom": "^0.9.10",
+    "@aws-sdk/client-s3": "^3.1123.0",
     "dotenv": "^17.4.2",
     "fullstacked": "./fullstacked/platform/node",
-    "mongodb": "^7.5.0",
-    "mysql2": "^3.23.2",
-    "pg": "^8.22.0",
-    "redis": "^6.2.0"
+    "mongodb": "^7.6.0",
+    "mysql2": "^3.24.2",
+    "pg": "^8.23.0",
+    "redis": "^6.2.1"
   }
 }

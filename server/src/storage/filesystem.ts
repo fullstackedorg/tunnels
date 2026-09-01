@@ -1,11 +1,11 @@
 import path from "node:path";
 import crypto from "node:crypto";
-import { Item, StorageProvider, WhereValue } from "./interface";
-import { getEnvOrArgCLI } from "../utils/args";
+import type { Item, StorageProvider, WhereValue } from "./interface.ts";
+import { getEnvOrArgCLI } from "../utils/args.ts";
 import fs from "node:fs";
-import { PgTableWithColumns, getTableConfig } from "drizzle-orm/pg-core";
+import { getTableConfig, type PgTableWithColumns } from "drizzle-orm/pg-core";
 import { getTableName } from "drizzle-orm";
-import { logger } from "../utils/logger";
+import { logger } from "../utils/logger.ts";
 
 type FileSystemCollectionStoredData = {
     lastId: number;

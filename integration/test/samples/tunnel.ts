@@ -1,5 +1,5 @@
 import tunnel from "fullstacked/tunnel";
-import { Tunnel } from "../../fullstacked/platform/node/types/@types/tunnel";
+import type { Tunnel } from "../../fullstacked/platform/node/types/@types/tunnel.d.ts";
 
 export function maybeTunnel(t?: Tunnel) {
     if (t) {

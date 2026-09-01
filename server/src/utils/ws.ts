@@ -1,5 +1,5 @@
 import * as ws from "ws";
-import { IncomingMessageWithDeny } from "../http";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 const wss = new ws.WebSocketServer({ noServer: true });
 

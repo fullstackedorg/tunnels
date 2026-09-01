@@ -3,8 +3,8 @@ import assert from "node:assert";
 import http from "node:http";
 import net from "node:net";
 import * as ws from "ws";
-import { registerHook } from "../src/utils/hooks";
-import { setupTestServer } from "./helpers";
+import { registerHook } from "../src/utils/hooks.ts";
+import { setupTestServer } from "./helpers.ts";
 
 const PORT = 3462;
 await setupTestServer(PORT);

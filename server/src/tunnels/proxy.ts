@@ -1,10 +1,10 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import { pipeline } from "node:stream";
-import { type Proxy } from "../entities/schema/proxy";
-import { logger } from "../utils/logger";
-import { executeHook } from "../utils/hooks";
-import { IncomingMessageWithDeny } from "../http";
+import { type Proxy } from "../entities/schema/proxy.ts";
+import { logger } from "../utils/logger.ts";
+import { executeHook } from "../utils/hooks.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 const Component = "Tunnel Proxy";
 

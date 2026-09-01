@@ -1,20 +1,26 @@
-import { getTableName } from "drizzle-orm";
+import { getTableName, type ColumnBaseConfig } from "drizzle-orm";
 import {
     getTableConfig,
-    PgColumn,
-    PgTableWithColumns,
+    type PgColumn,
+    type PgTableWithColumns,
 } from "drizzle-orm/pg-core";
-import { add, find, Item, list, remove, update } from "../storage/index";
+import {
+    add,
+    find,
+    list,
+    remove,
+    update,
+    type Item,
+} from "../storage/index.ts";
 import http from "node:http";
-import { respondJSON } from "../api/index";
-import { readAll } from "../utils/readAll";
-import { generateToken } from "../utils/token";
+import { respondJSON } from "../api/index.ts";
+import { readAll } from "../utils/readAll.ts";
+import { generateToken } from "../utils/token.ts";
 import crypto from "node:crypto";
-import { logger } from "../utils/logger";
-import * as kv from "../kv/index";
-import { ColumnBaseConfig } from "drizzle-orm";
-import { executeHook } from "../utils/hooks";
-import { IncomingMessageWithDeny } from "../http";
+import { logger } from "../utils/logger.ts";
+import * as kv from "../kv/index.ts";
+import { executeHook } from "../utils/hooks.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 export type TableSchema = {
     name: string;

@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { before, after, suite, test } from "node:test";
-import { startDockerCompose, stopDockerCompose } from "./helpers/compose";
-import { startFullStacked, stopFullStacked, runTestWithFullStacked } from "./helpers/fullstacked";
+import { startDockerCompose, stopDockerCompose } from "./helpers/compose.ts";
+import { startFullStacked, stopFullStacked, runTestWithFullStacked } from "./helpers/fullstacked.ts";
 import path from "node:path";
 import fs from "node:fs";
 import { tmpDir, samplesDir } from "./helpers/paths.ts";

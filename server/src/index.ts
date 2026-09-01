@@ -1,5 +1,5 @@
-import { getEnvOrArgCLI } from "./utils/args";
-import { logger } from "./utils/logger";
+import { getEnvOrArgCLI } from "./utils/args.ts";
+import { logger } from "./utils/logger.ts";
 
 type SERVER_TYPE = "relay" | "connected-to-relay";
 
@@ -12,11 +12,11 @@ export async function start() {
 
     if (serverType === "connected-to-relay") {
         const { connectToRelay, stopConnectToRelay } =
-            await import("./connect");
+            await import("./connect.ts");
         stopProcess = stopConnectToRelay;
         await connectToRelay();
     } else {
-        const { startRelay, stopRelay } = await import("./relay");
+        const { startRelay, stopRelay } = await import("./relay.ts");
         stopProcess = stopRelay;
         await startRelay();
     }

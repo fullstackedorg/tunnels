@@ -1,10 +1,10 @@
-import { getEnvOrArgCLI } from "../utils/args";
+import { getEnvOrArgCLI } from "../utils/args.ts";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { PgTableWithColumns } from "drizzle-orm/pg-core";
+import type { PgTableWithColumns } from "drizzle-orm/pg-core";
 import { and, eq } from "drizzle-orm";
 import crypto from "node:crypto";
-import { Item, StorageProvider, WhereValue } from "./interface";
+import type { Item, StorageProvider, WhereValue } from "./interface.ts";
 
 let db: ReturnType<typeof drizzle> | null = null;
 export async function initPostgreSQL() {

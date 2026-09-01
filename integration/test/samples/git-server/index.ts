@@ -1,8 +1,8 @@
 import git from "fullstacked/git";
 import plugin from "fullstacked/plugin";
 import fs from "node:fs";
-import { readTestFile } from "./test.common";
-import { maybeTunnel } from "../tunnel";
+import { readTestFile } from "./test.common.ts";
+import { maybeTunnel } from "../tunnel.ts";
 
 const dir = globalThis.testData;
 if (fs.existsSync(dir)) {

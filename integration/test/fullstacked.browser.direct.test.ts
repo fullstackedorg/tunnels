@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { before, after, suite, test } from "node:test";
-import { startDockerCompose, stopDockerCompose } from "./helpers/compose";
-import { startFullStacked, stopFullStacked, runTestWithFullStackedInBrowser } from "./helpers/fullstacked";
+import { startDockerCompose, stopDockerCompose } from "./helpers/compose.ts";
+import { startFullStacked, stopFullStacked, runTestWithFullStackedInBrowser } from "./helpers/fullstacked.ts";
 import { stopAllBrowsers } from "../fullstacked/test/browser.ts";
 import fs from "node:fs";
 import path from "node:path";

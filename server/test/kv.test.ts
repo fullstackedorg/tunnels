@@ -1,16 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import cluster from "node:cluster";
-import * as kv from "../src/kv/index";
+import * as kv from "../src/kv/index.ts";
 import {
     cleanExpiredFileSystemKeys,
     startCleanupInterval,
     stopCleanupInterval,
-} from "../src/kv/filesystem";
-import { getByToken, invalidateItem } from "../src/entities/index";
-import { machinesTable } from "../src/entities/schema/machine";
-import { add, remove } from "../src/storage/index";
-import { slugify } from "../src/utils/slugify";
+} from "../src/kv/filesystem.ts";
+import { getByToken, invalidateItem } from "../src/entities/index.ts";
+import { machinesTable } from "../src/entities/schema/machine.ts";
+import { add, remove } from "../src/storage/index.ts";
+import { slugify } from "../src/utils/slugify.ts";
 
 test("KV - set, get, del operations", async () => {
     const testKey = "test:sample_key_" + Date.now();

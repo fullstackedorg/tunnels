@@ -1,5 +1,5 @@
-import { maybeTunnel } from "../tunnel";
-import { testMySQL } from "./test";
+import { maybeTunnel } from "../tunnel.ts";
+import { testMySQL } from "./test.ts";
 
 globalThis.testResult(await testMySQL(
     Number(process.env.MYSQL_PORT!),

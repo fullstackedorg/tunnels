@@ -1,5 +1,5 @@
-import { logger } from "./logger";
-import { IncomingMessageWithDeny } from "../http";
+import { logger } from "./logger.ts";
+import type { IncomingMessageWithDeny } from "../http/index.ts";
 
 type HookFunction = (
     req: IncomingMessageWithDeny,

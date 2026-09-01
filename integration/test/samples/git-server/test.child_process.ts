@@ -1,6 +1,6 @@
 import child_process from "node:child_process";
 import fs from "node:fs";
-import { readTestFile } from "./test.common";
+import { readTestFile } from "./test.common.ts";
 
 export async function testGitServer(
     port: number,

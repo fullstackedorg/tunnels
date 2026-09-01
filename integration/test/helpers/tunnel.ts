@@ -4,12 +4,12 @@ import url from "node:url";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { Worker } from "node:worker_threads";
-import { isHttpReady } from "./compose";
-import { Tunnel } from "../../fullstacked/platform/node/types/@types/tunnel";
+import { isHttpReady } from "./compose.ts";
+import type { Tunnel } from "../../fullstacked/platform/node/types/@types/tunnel.d.ts";
 import { tmpDir } from "./paths.ts";
 import { acquireLock, getActivePids, registerProcess, unregisterProcess, runOnce, clearState, getProcessIdentifier } from "./lock.ts";
 import { randomString } from "./string.ts";
-import { GitProxy } from "../../fullstacked/platform/node/types/@types/git";
+import type { GitProxy } from "../../fullstacked/platform/node/types/@types/git.d.ts";
 
 const currentDirectory = path.dirname(url.fileURLToPath(import.meta.url));
 const lockDir = path.join(tmpDir, ".tunnel-lock");

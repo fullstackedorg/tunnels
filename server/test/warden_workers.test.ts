@@ -11,10 +11,10 @@ const PORT = 3463;
 const testDataDir = path.resolve(`./test-data-dir-${PORT}`);
 process.env.DATA_DIR = testDataDir;
 
-const kv = await import("../src/kv/index");
-const warden = await import("../src/warden/index");
-import type { Machine } from "../src/entities/schema/machine";
-import type { Service } from "../src/entities/schema/service";
+const kv = await import("../src/kv/index.ts");
+const warden = await import("../src/warden/index.ts");
+import type { Machine } from "../src/entities/schema/machine.ts";
+import type { Service } from "../src/entities/schema/service.ts";
 
 test("Warden KV lifeline registration and lookup", async () => {
     const machineId = ("test-warden-machine-" + Date.now()) as crypto.UUID;
@@ -91,8 +91,7 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
     const relayProcess = spawn(
         process.execPath,
         [
-            "-r",
-            "@nitrogql/esbuild-register",
+            "--experimental-strip-types",
             path.resolve("./src/main.ts"),
             "--port",
             PORT.toString(),
@@ -146,8 +145,7 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         connectedMachineProcess = spawn(
             process.execPath,
             [
-                "-r",
-                "@nitrogql/esbuild-register",
+                "--experimental-strip-types",
                 path.resolve("./src/main.ts"),
                 "--relay-url",
                 `ws://127.0.0.1:${PORT}`,
