@@ -8,12 +8,42 @@ type HookFunction = (
 
 const hooks = new Map<string, HookFunction[]>();
 
-export function registerHook(hook: string, func: HookFunction) {
+export function registerHook(hook: string, func: HookFunction): () => void {
     if (!hooks.has(hook)) {
         hooks.set(hook, []);
     }
 
     hooks.get(hook)!.push(func);
+
+    return () => {
+        removeHook(hook, func);
+    };
+}
+
+export function removeHook(hook: string, func: HookFunction) {
+    const list = hooks.get(hook);
+    if (!list) return;
+    const index = list.indexOf(func);
+    if (index !== -1) {
+        list.splice(index, 1);
+    }
+    if (list.length === 0) {
+        hooks.delete(hook);
+    }
+}
+
+const SYSTEM_HOOKS = new Set(["get_machines"]);
+
+export function clearHooks(hook?: string) {
+    if (hook) {
+        hooks.delete(hook);
+    } else {
+        for (const key of Array.from(hooks.keys())) {
+            if (!SYSTEM_HOOKS.has(key)) {
+                hooks.delete(key);
+            }
+        }
+    }
 }
 
 async function executeHookAsync(

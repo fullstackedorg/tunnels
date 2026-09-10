@@ -128,6 +128,7 @@ export async function createServerHTTP() {
 }
 
 export function stopServerHTTP() {
+    server?.closeAllConnections?.();
     server?.close();
     server = null;
 }

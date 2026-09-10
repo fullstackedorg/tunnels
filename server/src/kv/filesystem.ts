@@ -6,21 +6,25 @@ import type { KVProvider } from "./interface.ts";
 import { logger } from "../utils/logger.ts";
 import { slugify } from "../utils/slugify.ts";
 
-const dataDirectory =
-    getEnvOrArgCLI(["DATA_DIR", "data-dir", "d"], "string") || "data";
-const kvDirectory = path.resolve(dataDirectory, "kv");
+function getDataDirectory() {
+    return getEnvOrArgCLI(["DATA_DIR", "data-dir", "d"], "string") || "data";
+}
+function getKVDirectory() {
+    return path.resolve(getDataDirectory(), "kv");
+}
 
 export async function cleanExpiredFileSystemKeys(): Promise<number> {
     let deletedCount = 0;
     logger.info("KV FileSystem", "Cleaning up expired KV");
     try {
-        await fs.promises.mkdir(kvDirectory, { recursive: true });
-        const files = await fs.promises.readdir(kvDirectory);
+        const kvDir = getKVDirectory();
+        await fs.promises.mkdir(kvDir, { recursive: true });
+        const files = await fs.promises.readdir(kvDir);
         const now = Date.now();
 
         for (const file of files) {
             if (!file.endsWith(".json")) continue;
-            const filePath = path.resolve(kvDirectory, file);
+            const filePath = path.resolve(kvDir, file);
             try {
                 const raw = await fs.promises.readFile(filePath, "utf-8");
                 const data = JSON.parse(raw);
@@ -75,8 +79,9 @@ export function stopCleanupInterval(): void {
 }
 
 async function getFileSystem<T = any>(key: string): Promise<T | null> {
-    await fs.promises.mkdir(kvDirectory, { recursive: true });
-    const filePath = path.resolve(kvDirectory, slugify(key) + ".json");
+    const kvDir = getKVDirectory();
+    await fs.promises.mkdir(kvDir, { recursive: true });
+    const filePath = path.resolve(kvDir, slugify(key) + ".json");
     try {
         const raw = await fs.promises.readFile(filePath, "utf-8");
         const data = JSON.parse(raw);
@@ -102,8 +107,9 @@ async function setFileSystem(
     value: any,
     expiration?: number,
 ): Promise<void> {
-    await fs.promises.mkdir(kvDirectory, { recursive: true });
-    const filePath = path.resolve(kvDirectory, slugify(key) + ".json");
+    const kvDir = getKVDirectory();
+    await fs.promises.mkdir(kvDir, { recursive: true });
+    const filePath = path.resolve(kvDir, slugify(key) + ".json");
     const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
     const payload = {
         __kv_value__: value,
@@ -118,7 +124,8 @@ async function setFileSystem(
 }
 
 async function delFileSystem(key: string): Promise<void> {
-    const filePath = path.resolve(kvDirectory, slugify(key) + ".json");
+    const kvDir = getKVDirectory();
+    const filePath = path.resolve(kvDir, slugify(key) + ".json");
     try {
         await fs.promises.unlink(filePath);
     } catch {

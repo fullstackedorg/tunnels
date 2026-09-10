@@ -12,7 +12,7 @@ const PORT = 3461;
 process.env.ALLOW_FILESYSTEM_MULTIWORKER = "1";
 await setupTestServer(PORT);
 
-test("Relay e2e round-trip - with WORKERS=2", async () => {
+test("Relay e2e round-trip - with WORKERS=2", async (t) => {
     // 1. Spawn a TCP Echo server
     let receivedDataByEchoServer = false;
     const socketServer = net.createServer((socket) => {
@@ -21,7 +21,9 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
         });
         socket.pipe(socket);
     });
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const echoPort = (socketServer.address() as net.AddressInfo).port;
 
     // 2. Register Machine
@@ -47,9 +49,9 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
         rejectMachineConnected(
             new Error(`Timed out waiting for machine_connect hook`),
         );
-    }, 5000);
+    }, 10000);
 
-    registerHook("machine_connect", async (req) => {
+    const unregisterHook = registerHook("machine_connect", async (req) => {
         if (req.headers.authorization === machine.token) {
             clearTimeout(connectTimeout);
             resolveMachineConnected();
@@ -66,6 +68,8 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
         machine.token,
         "--workers",
         "2",
+        "--reconnect-timeout",
+        "200",
     ]);
 
     connectedProcess.stdout?.on("data", (d) =>
@@ -84,63 +88,70 @@ test("Relay e2e round-trip - with WORKERS=2", async () => {
         }
     });
 
-    await machineConnectedPromise;
-
-    try {
-        // 4. Register Relayed Service
-        const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                name: "test-relayed-service-workers",
-                internalHost: "127.0.0.1",
-                internalPort: echoPort,
-                machineId: machine.id,
-            }),
-        });
-
-        assert.strictEqual(serviceRes.status, 200);
-        const service = await serviceRes.json();
-        await kv.set(`services:${service.token}`, service);
-
-        // 5. Client connects via WS
-        const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
-            headers: { Authorization: service.token },
-        });
-
-        await new Promise<void>((resolve, reject) => {
-            wsClient.on("open", resolve);
-            wsClient.on("error", reject);
-        });
-
-        // 6. Pass data round-trip
-        const testPayload = "Hello Workers Round-Trip!";
-        const responsePromise = new Promise<string>((resolve, reject) => {
-            const timeout = setTimeout(
-                () => reject(new Error("Relayed round trip timed out")),
-                5000,
-            );
-            wsClient.on("message", (data) => {
-                clearTimeout(timeout);
-                resolve(data.toString());
-            });
-            wsClient.on("error", (err) => {
-                clearTimeout(timeout);
-                reject(err);
-            });
-        });
-
-        wsClient.send(testPayload);
-        const echoResult = await responsePromise;
-
-        assert.strictEqual(echoResult, testPayload);
-        assert.ok(receivedDataByEchoServer);
-
-        wsClient.close();
-    } finally {
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        clearTimeout(connectTimeout);
+        unregisterHook();
+        wsClient?.close();
         connectedProcess.kill("SIGKILL");
+        await new Promise<void>((resolve) => {
+            if (connectedProcess.exitCode !== null) return resolve();
+            connectedProcess.once("exit", () => resolve());
+            setTimeout(resolve, 500);
+        });
         await new Promise<void>((resolve) =>
             socketServer.close(() => resolve()),
         );
-    }
+    });
+
+    await machineConnectedPromise;
+
+    // 4. Register Relayed Service
+    const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: "test-relayed-service-workers",
+            internalHost: "127.0.0.1",
+            internalPort: echoPort,
+            machineId: machine.id,
+        }),
+    });
+
+    assert.strictEqual(serviceRes.status, 200);
+    const service = await serviceRes.json();
+    await kv.set(`services:${service.token}`, service);
+
+    // 5. Client connects via WS
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+        headers: { Authorization: service.token },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+        wsClient!.on("open", resolve);
+        wsClient!.on("error", reject);
+    });
+
+    // 6. Pass data round-trip
+    const testPayload = "Hello Workers Round-Trip!";
+    const responsePromise = new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(
+            () => reject(new Error("Relayed round trip timed out")),
+            5000,
+        );
+        wsClient!.on("message", (data) => {
+            clearTimeout(timeout);
+            resolve(data.toString());
+        });
+        wsClient!.on("error", (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
+    });
+
+    wsClient.send(testPayload);
+    const echoResult = await responsePromise;
+
+    assert.strictEqual(echoResult, testPayload);
+    assert.ok(receivedDataByEchoServer);
 });

@@ -64,7 +64,7 @@ test("Warden getRelayedService throws if machine not connected in KV", async () 
     );
 });
 
-test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
+test("Warden multi-worker KV lifeline and parent IPC routing e2e", async (t) => {
     // 1. Spawn a TCP Echo server for the machine to connect to
     let receivedDataByEchoServer = false;
     const socketServer = net.createServer((socket) => {
@@ -73,7 +73,9 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
         });
         socket.pipe(socket);
     });
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const echoPort = (socketServer.address() as net.AddressInfo).port;
 
     // 2. Spawn Relay Server with --workers 2 using ALLOW_FILESYSTEM_MULTIWORKER=1
@@ -108,6 +110,19 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
     relayProcess.stdout?.on("data", (d) => console.log(`[relay-out] ${d}`));
     relayProcess.stderr?.on("data", (d) => console.error(`[relay-err] ${d}`));
 
+    let connectedMachineProcess: any = null;
+    let currentWsClient: ws.WebSocket | null = null;
+
+    t.after(async () => {
+        currentWsClient?.close();
+        connectedMachineProcess?.kill("SIGKILL");
+        relayProcess?.kill("SIGKILL");
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+        await fs.promises.rm(testDataDir, { recursive: true, force: true });
+    });
+
     // Wait for server to start listening
     let serverReady = false;
     for (let i = 0; i < 20; i++) {
@@ -121,116 +136,112 @@ test("Warden multi-worker KV lifeline and parent IPC routing e2e", async () => {
     }
     assert.ok(serverReady, "Relay server failed to start");
 
-    let connectedMachineProcess: any = null;
+    // 3. Register Machine on Relay server
+    const machineRes = await fetch(`http://127.0.0.1:${PORT}/machines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: "test-warden-multi-worker-machine",
+        }),
+    });
+    assert.strictEqual(machineRes.status, 200, "Machine creation failed");
+    const machine = await machineRes.json();
+    assert.ok(machine.id, "Machine ID missing");
+    assert.ok(machine.token, "Machine token missing");
+    await kv.set(`machines:${machine.token}`, machine);
 
-    try {
-        // 3. Register Machine on Relay server
-        const machineRes = await fetch(`http://127.0.0.1:${PORT}/machines`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                name: "test-warden-multi-worker-machine",
-            }),
-        });
-        assert.strictEqual(machineRes.status, 200, "Machine creation failed");
-        const machine = await machineRes.json();
-        assert.ok(machine.id, "Machine ID missing");
-        assert.ok(machine.token, "Machine token missing");
-        await kv.set(`machines:${machine.token}`, machine);
+    // 4. Start Connected-to-Relay machine process
+    const machineEnv = { ...cleanEnv };
+    delete machineEnv.WORKERS;
 
-        // 4. Start Connected-to-Relay machine process
-        const machineEnv = { ...cleanEnv };
-        delete machineEnv.WORKERS;
+    connectedMachineProcess = spawn(
+        process.execPath,
+        [
+            "--experimental-strip-types",
+            path.resolve("./src/main.ts"),
+            "--relay-url",
+            `ws://127.0.0.1:${PORT}`,
+            "--token",
+            machine.token,
+        ],
+        {
+            env: machineEnv,
+        },
+    );
 
-        connectedMachineProcess = spawn(
-            process.execPath,
-            [
-                "--experimental-strip-types",
-                path.resolve("./src/main.ts"),
-                "--relay-url",
-                `ws://127.0.0.1:${PORT}`,
-                "--token",
-                machine.token,
-            ],
-            {
-                env: machineEnv,
-            },
-        );
+    connectedMachineProcess.stdout?.on("data", (d: any) =>
+        console.log(`[machine-out] ${d}`),
+    );
+    connectedMachineProcess.stderr?.on("data", (d: any) =>
+        console.error(`[machine-err] ${d}`),
+    );
 
-        connectedMachineProcess.stdout?.on("data", (d: any) =>
-            console.log(`[machine-out] ${d}`),
-        );
-        connectedMachineProcess.stderr?.on("data", (d: any) =>
-            console.error(`[machine-err] ${d}`),
-        );
-
-        // Wait for machine lifeline to connect
-        await new Promise((r) => setTimeout(r, 3000));
-
-        // 5. Register Relayed Service
-        const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                name: "test-warden-relayed-service",
-                internalHost: "127.0.0.1",
-                internalPort: echoPort,
-                machineId: machine.id,
-            }),
-        });
-
-        assert.strictEqual(
-            serviceRes.status,
-            200,
-            "Relayed service creation failed",
-        );
-        const service = await serviceRes.json();
-        assert.ok(service.token, "Service token missing");
-        await kv.set(`services:${service.token}`, service);
-
-        // 6. Connect multiple clients back-to-back to stress test worker routing
-        for (let i = 0; i < 3; i++) {
-            const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
-                headers: { Authorization: service.token },
-            });
-
-            await new Promise<void>((resolve, reject) => {
-                wsClient.on("open", resolve);
-                wsClient.on("error", reject);
-            });
-
-            const testPayload = `Warden Multi Worker Payload #${i}`;
-            const responsePromise = new Promise<string>((resolve, reject) => {
-                const timeout = setTimeout(
-                    () => reject(new Error("Relayed round trip timed out")),
-                    5000,
-                );
-                wsClient.on("message", (data) => {
-                    clearTimeout(timeout);
-                    resolve(data.toString());
-                });
-                wsClient.on("error", (err) => {
-                    clearTimeout(timeout);
-                    reject(err);
-                });
-            });
-
-            wsClient.send(testPayload);
-            const echoResult = await responsePromise;
-
-            assert.strictEqual(echoResult, testPayload);
-            wsClient.close();
+    // Wait for machine lifeline to connect
+    let machineConnected = false;
+    for (let i = 0; i < 40; i++) {
+        if (await warden.isMachineConnected(machine)) {
+            machineConnected = true;
+            break;
         }
-
-        assert.ok(receivedDataByEchoServer);
-    } finally {
-        connectedMachineProcess?.kill("SIGKILL");
-        relayProcess?.kill("SIGKILL");
-        await new Promise<void>((resolve) =>
-            socketServer.close(() => resolve()),
-        );
-        await fs.promises
-            .rm(testDataDir, { recursive: true, force: true })
-            .catch(() => {});
+        await new Promise((r) => setTimeout(r, 100));
     }
+    assert.ok(machineConnected, "Machine lifeline failed to connect");
+
+    // 5. Register Relayed Service
+    const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: "test-warden-relayed-service",
+            internalHost: "127.0.0.1",
+            internalPort: echoPort,
+            machineId: machine.id,
+        }),
+    });
+
+    assert.strictEqual(
+        serviceRes.status,
+        200,
+        "Relayed service creation failed",
+    );
+    const service = await serviceRes.json();
+    assert.ok(service.token, "Service token missing");
+    await kv.set(`services:${service.token}`, service);
+
+    // 6. Connect multiple clients back-to-back to stress test worker routing
+    for (let i = 0; i < 3; i++) {
+        currentWsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+            headers: { Authorization: service.token },
+        });
+
+        await new Promise<void>((resolve, reject) => {
+            currentWsClient!.on("open", resolve);
+            currentWsClient!.on("error", reject);
+        });
+
+        const testPayload = `Warden Multi Worker Payload #${i}`;
+        const responsePromise = new Promise<string>((resolve, reject) => {
+            const timeout = setTimeout(
+                () => reject(new Error("Relayed round trip timed out")),
+                5000,
+            );
+            currentWsClient!.on("message", (data) => {
+                clearTimeout(timeout);
+                resolve(data.toString());
+            });
+            currentWsClient!.on("error", (err) => {
+                clearTimeout(timeout);
+                reject(err);
+            });
+        });
+
+        currentWsClient.send(testPayload);
+        const echoResult = await responsePromise;
+
+        assert.strictEqual(echoResult, testPayload);
+        currentWsClient.close();
+        currentWsClient = null;
+    }
+
+    assert.ok(receivedDataByEchoServer);
 });

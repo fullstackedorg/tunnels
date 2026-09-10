@@ -7,7 +7,7 @@ import { setupTestServer } from "./helpers.ts";
 const PORT = 3457;
 await setupTestServer(PORT);
 
-test("Tunnel service timing - rapid back-to-back client writes on open", async () => {
+test("Tunnel service timing - rapid back-to-back client writes on open", async (t) => {
     let receivedChunks: string[] = [];
     const socketServer = net.createServer((socket) => {
         socket.on("data", (data) => {
@@ -15,8 +15,18 @@ test("Tunnel service timing - rapid back-to-back client writes on open", async (
         });
     });
 
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const socketPort = (socketServer.address() as net.AddressInfo).port;
+
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        wsClient?.close();
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+    });
 
     const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
         method: "POST",
@@ -31,13 +41,13 @@ test("Tunnel service timing - rapid back-to-back client writes on open", async (
 
     const service = await serviceRes.json();
 
-    const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: { Authorization: service.token },
     });
 
     await new Promise<void>((resolve, reject) => {
-        wsClient.on("open", resolve);
-        wsClient.on("error", reject);
+        wsClient!.on("open", resolve);
+        wsClient!.on("error", reject);
     });
 
     // Send 10 rapid messages immediately on open
@@ -49,18 +59,18 @@ test("Tunnel service timing - rapid back-to-back client writes on open", async (
     const expectedFull = messages.join("");
 
     await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-            () =>
-                reject(
-                    new Error(
-                        `Timed out waiting for rapid chunks. Received: ${receivedChunks.join("")}`,
-                    ),
+        let interval: NodeJS.Timeout | null = null;
+        const timeout = setTimeout(() => {
+            if (interval) clearInterval(interval);
+            reject(
+                new Error(
+                    `Timed out waiting for rapid chunks. Received: ${receivedChunks.join("")}`,
                 ),
-            5000,
-        );
-        const interval = setInterval(() => {
+            );
+        }, 5000);
+        interval = setInterval(() => {
             if (receivedChunks.join("") === expectedFull) {
-                clearInterval(interval);
+                clearInterval(interval!);
                 clearTimeout(timeout);
                 resolve();
             }
@@ -72,12 +82,9 @@ test("Tunnel service timing - rapid back-to-back client writes on open", async (
         expectedFull,
         "All rapid client messages must be delivered to outbound socket",
     );
-
-    wsClient.close();
-    await new Promise<void>((resolve) => socketServer.close(() => resolve()));
 });
 
-test("Tunnel service timing - external service instant write on connection", async () => {
+test("Tunnel service timing - external service instant write on connection", async (t) => {
     const greetingMessage = "BANNER: WELCOME_TO_EXTERNAL_SERVICE\n";
 
     const socketServer = net.createServer((socket) => {
@@ -90,8 +97,18 @@ test("Tunnel service timing - external service instant write on connection", asy
         });
     });
 
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const socketPort = (socketServer.address() as net.AddressInfo).port;
+
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        wsClient?.close();
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+    });
 
     const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
         method: "POST",
@@ -106,7 +123,7 @@ test("Tunnel service timing - external service instant write on connection", asy
 
     const service = await serviceRes.json();
 
-    const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: { Authorization: service.token },
     });
 
@@ -115,11 +132,14 @@ test("Tunnel service timing - external service instant write on connection", asy
             () => reject(new Error("Timed out waiting for instant banner")),
             5000,
         );
-        wsClient.on("message", (data) => {
+        wsClient!.on("message", (data) => {
             clearTimeout(timeout);
             resolve(data.toString());
         });
-        wsClient.on("error", reject);
+        wsClient!.on("error", (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
     });
 
     const receivedGreeting = await greetingPromise;
@@ -135,11 +155,14 @@ test("Tunnel service timing - external service instant write on connection", asy
             () => reject(new Error("Timed out waiting for echo reply")),
             5000,
         );
-        wsClient.on("message", (data) => {
+        wsClient!.on("message", (data) => {
             clearTimeout(timeout);
             resolve(data.toString());
         });
-        wsClient.on("error", reject);
+        wsClient!.on("error", (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
     });
 
     wsClient.send("CLIENT_ACK");
@@ -149,12 +172,9 @@ test("Tunnel service timing - external service instant write on connection", asy
         "CLIENT_ACK",
         "Tunnel must deliver client ACK back to external service socket",
     );
-
-    wsClient.close();
-    await new Promise<void>((resolve) => socketServer.close(() => resolve()));
 });
 
-test("Tunnel service timing - simultaneous instant writes on connect", async () => {
+test("Tunnel service timing - simultaneous instant writes on connect", async (t) => {
     const serverInstantMsg = "SERVER_INSTANT_PING";
     const clientInstantMsg = "CLIENT_INSTANT_PONG";
 
@@ -169,8 +189,18 @@ test("Tunnel service timing - simultaneous instant writes on connect", async () 
         });
     });
 
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const socketPort = (socketServer.address() as net.AddressInfo).port;
+
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        wsClient?.close();
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+    });
 
     const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
         method: "POST",
@@ -185,7 +215,7 @@ test("Tunnel service timing - simultaneous instant writes on connect", async () 
 
     const service = await serviceRes.json();
 
-    const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: { Authorization: service.token },
     });
 
@@ -195,18 +225,22 @@ test("Tunnel service timing - simultaneous instant writes on connect", async () 
             () => reject(new Error("Timed out waiting for server instant msg")),
             5000,
         );
-        wsClient.on("message", (data) => {
+        wsClient!.on("message", (data) => {
             clientReceivedServerMsg += data.toString();
             if (clientReceivedServerMsg.includes(serverInstantMsg)) {
                 clearTimeout(timeout);
                 resolve();
             }
         });
+        wsClient!.on("error", (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
     });
 
     // Send immediately on open
     wsClient.on("open", () => {
-        wsClient.send(clientInstantMsg);
+        wsClient!.send(clientInstantMsg);
     });
 
     await clientGotServerPromise;
@@ -218,18 +252,18 @@ test("Tunnel service timing - simultaneous instant writes on connect", async () 
 
     // Wait until server receives client message
     await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-            () =>
-                reject(
-                    new Error(
-                        "Timed out waiting for server to receive client instant msg",
-                    ),
+        let interval: NodeJS.Timeout | null = null;
+        const timeout = setTimeout(() => {
+            if (interval) clearInterval(interval);
+            reject(
+                new Error(
+                    "Timed out waiting for server to receive client instant msg",
                 ),
-            5000,
-        );
-        const interval = setInterval(() => {
+            );
+        }, 5000);
+        interval = setInterval(() => {
             if (serverReceivedClientMsg.includes(clientInstantMsg)) {
-                clearInterval(interval);
+                clearInterval(interval!);
                 clearTimeout(timeout);
                 resolve();
             }
@@ -241,7 +275,4 @@ test("Tunnel service timing - simultaneous instant writes on connect", async () 
         clientInstantMsg,
         "External server must receive client instant write",
     );
-
-    wsClient.close();
-    await new Promise<void>((resolve) => socketServer.close(() => resolve()));
 });

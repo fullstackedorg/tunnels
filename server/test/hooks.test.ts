@@ -7,23 +7,35 @@ import { setupTestServer } from "./helpers.ts";
 const PORT = 3459;
 await setupTestServer(PORT);
 
-test("Hooks - stop execution using hooks (on-request, rest_api_access & on-upgrade)", async () => {
+test("Hooks - stop execution using hooks (on-request, rest_api_access & on-upgrade)", async (t) => {
+    let blockedWsClient: ws.WebSocket | null = null;
+    let unregisterOnRequest: (() => void) | null = null;
+    let unregisterRestApi: (() => void) | null = null;
+    let unregisterOnUpgrade: (() => void) | null = null;
+
+    t.after(() => {
+        unregisterOnRequest?.();
+        unregisterRestApi?.();
+        unregisterOnUpgrade?.();
+        blockedWsClient?.close();
+    });
+
     // 1. Register an "on-request" hook that stops execution when requesting /blocked-by-hook
-    registerHook("on_request", async (req) => {
+    unregisterOnRequest = registerHook("on_request", async (req) => {
         if (req.url === "/blocked-by-hook") {
             req.deny();
         }
     });
 
     // 2. Register a "rest_api_access" hook that stops execution when header x-block-api is present
-    registerHook("rest_api_access", async (req) => {
+    unregisterRestApi = registerHook("rest_api_access", async (req) => {
         if (req.headers["x-block-api"] === "true") {
             req.deny();
         }
     });
 
     // 3. Register an "on-upgrade" hook that stops execution when header x-block-ws is present
-    registerHook("on_upgrade", async (req) => {
+    unregisterOnUpgrade = registerHook("on_upgrade", async (req) => {
         if (req.headers["x-block-ws"] === "true") {
             req.deny();
         }
@@ -81,7 +93,7 @@ test("Hooks - stop execution using hooks (on-request, rest_api_access & on-upgra
     const service = await serviceRes.json();
 
     // WebSocket upgrade request with x-block-ws header should be destroyed/stopped on-upgrade
-    const blockedWsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    blockedWsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: {
             Authorization: service.token,
             "x-block-ws": "true",
@@ -90,8 +102,8 @@ test("Hooks - stop execution using hooks (on-request, rest_api_access & on-upgra
 
     await assert.rejects(
         new Promise<void>((resolve, reject) => {
-            blockedWsClient.on("open", resolve);
-            blockedWsClient.on("error", reject);
+            blockedWsClient!.on("open", resolve);
+            blockedWsClient!.on("error", reject);
         }),
         "WebSocket request blocked by on-upgrade hook should fail",
     );

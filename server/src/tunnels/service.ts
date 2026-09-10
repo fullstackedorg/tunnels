@@ -35,7 +35,10 @@ export async function tunnelService(
 
     const duplex = createWebSocketStream(ws);
 
+    let isCleanedUp = false;
     const cleanup = () => {
+        if (isCleanedUp) return;
+        isCleanedUp = true;
         socket.destroy();
         duplex.destroy();
         ws.close();
@@ -48,6 +51,7 @@ export async function tunnelService(
         );
         cleanup();
     });
+    socket.on("close", cleanup);
 
     ws.on("error", (err) => {
         logger.error(
@@ -56,11 +60,16 @@ export async function tunnelService(
         );
         cleanup();
     });
+    ws.on("close", cleanup);
 
     executeHook("tunnel_service", req, service, duplex, socket);
 
-    pipeline(duplex, socket, () => {});
-    pipeline(socket, duplex, () => {});
+    pipeline(duplex, socket, () => {
+        cleanup();
+    });
+    pipeline(socket, duplex, () => {
+        cleanup();
+    });
 
     req.socket.resume();
     logger.info(

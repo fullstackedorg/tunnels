@@ -29,6 +29,7 @@ test("Tunnel proxy HTTP request e2e - https conversion (www.google.com)", async 
         headers: {
             Authorization: proxy.token,
         },
+        signal: AbortSignal.timeout(10000),
     });
 
     // 3. Verify assertions
@@ -44,12 +45,12 @@ test("Tunnel proxy HTTP request e2e - https conversion (www.google.com)", async 
     );
 });
 
-test("Tunnel proxy HTTP POST request e2e - forwards request body", async () => {
-    // 1. Spawn a target HTTP server to echo request body
+test("Tunnel proxy HTTP POST request e2e - forwards request body", async (t) => {
+    // 1. Spawn a target HTTP server to echo headers and body
     const targetServer = http.createServer((req, res) => {
         let body = "";
         req.on("data", (chunk) => {
-            body += chunk.toString();
+            body += chunk;
         });
         req.on("end", () => {
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -64,7 +65,16 @@ test("Tunnel proxy HTTP POST request e2e - forwards request body", async () => {
         });
     });
 
-    await new Promise<void>((resolve) => targetServer.listen(0, resolve));
+    t.after(
+        async () =>
+            await new Promise<void>((resolve) =>
+                targetServer.close(() => resolve()),
+            ),
+    );
+
+    await new Promise<void>((resolve) =>
+        targetServer.listen(0, "127.0.0.1", resolve),
+    );
     const targetPort = (targetServer.address() as net.AddressInfo).port;
 
     // 2. Register proxy via HTTP API
@@ -93,6 +103,7 @@ test("Tunnel proxy HTTP POST request e2e - forwards request body", async () => {
             "Content-Type": "application/json",
         },
         body: payloadData,
+        signal: AbortSignal.timeout(10000),
     });
 
     assert.strictEqual(res.status, 200, "Proxy POST request failed");
@@ -106,7 +117,4 @@ test("Tunnel proxy HTTP POST request e2e - forwards request body", async () => {
         payloadData,
         "Proxied request body should match original request payload",
     );
-
-    // Cleanup
-    await new Promise<void>((resolve) => targetServer.close(() => resolve()));
 });

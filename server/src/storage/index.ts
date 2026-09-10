@@ -7,6 +7,7 @@ import type { StorageProvider, Item, WhereValue } from "./interface.ts";
 import { getEnvOrArgCLI } from "../utils/args.ts";
 
 export * from "./interface.ts";
+export { clearStoredDataCache } from "./filesystem.ts";
 
 export const StorageType = {
     FileSystem: "filesystem",

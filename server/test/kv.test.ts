@@ -96,33 +96,32 @@ test("KV - start and stop cleanup interval", () => {
     stopCleanupInterval();
 });
 
-test("KV - getByToken and invalidateItem integration", async () => {
+test("KV - getByToken and invalidateItem integration", async (t) => {
     const token = "token_kv_test_" + Date.now();
     const machine = await add(machinesTable, {
         token,
         version: "1.0.0",
     });
-
-    try {
-        // First getByToken populates KV cache
-        const item1 = await getByToken(machinesTable, token);
-        assert.ok(item1);
-        assert.strictEqual(item1.token, token);
-
-        // Verify KV has key
-        const cached = await kv.get(`machines:${token}`);
-        assert.ok(cached);
-        assert.strictEqual((cached as any).token, token);
-
-        // Invalidate cache
-        await invalidateItem(machinesTable, token);
-
-        // Verify KV key was deleted
-        const afterInvalidate = await kv.get(`machines:${token}`);
-        assert.strictEqual(afterInvalidate, null);
-    } finally {
+    t.after(async () => {
         if (machine) {
             await remove(machinesTable, machine.id);
         }
-    }
+    });
+
+    // First getByToken populates KV cache
+    const item1 = await getByToken(machinesTable, token);
+    assert.ok(item1);
+    assert.strictEqual(item1.token, token);
+
+    // Verify KV has key
+    const cached = await kv.get(`machines:${token}`);
+    assert.ok(cached);
+    assert.strictEqual((cached as any).token, token);
+
+    // Invalidate cache
+    await invalidateItem(machinesTable, token);
+
+    // Verify KV key was deleted
+    const afterInvalidate = await kv.get(`machines:${token}`);
+    assert.strictEqual(afterInvalidate, null);
 });

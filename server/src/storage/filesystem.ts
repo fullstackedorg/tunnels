@@ -19,27 +19,41 @@ interface FileSystemCollection {
     remove(id: Item["id"]): Item | undefined;
 }
 
-const dataDirectory =
-    getEnvOrArgCLI(["DATA_DIR", "data-dir", "d"], "string") || "data";
+function getDataDirectory(): string {
+    return getEnvOrArgCLI(["DATA_DIR", "data-dir", "d"], "string") || "data";
+}
 
 const storedDataCache = new Map<string, FileSystemCollectionStoredData>();
 const dirtyCollectionsData = new Set<string>();
 
+export function clearStoredDataCache() {
+    storedDataCache.clear();
+    dirtyCollectionsData.clear();
+    if (flushTimeout) {
+        clearTimeout(flushTimeout);
+        flushTimeout = undefined;
+    }
+}
+
 let lastFlush = 0,
-    flushingLockPromise: Promise<void> | null;
-function flushToDisk() {
+    flushingLockPromise: Promise<void> | null = null;
+
+export function flushToDisk(): Promise<void> {
     flushingLockPromise = new Promise<void>(async (resolve) => {
-        let loggerMessage = `Flushing ${dirtyCollectionsData.size} collections to disk: ${[...dirtyCollectionsData].map((tableName) => `${tableName} [${storedDataCache.get(tableName)!.data.length} items]`).join(", ")}`;
+        let loggerMessage = `Flushing ${dirtyCollectionsData.size} collections to disk: ${[...dirtyCollectionsData].map((key) => `${key} [${storedDataCache.get(key)!.data.length} items]`).join(", ")}`;
         logger.info("Storage.FileSystem", loggerMessage);
 
         lastFlush = Date.now();
 
         const writePromises: Promise<void>[] = [];
 
-        for (const dirtyTableName of dirtyCollectionsData) {
-            const collection = storedDataCache.get(dirtyTableName)!;
+        for (const dirtyKey of dirtyCollectionsData) {
+            const separatorIndex = dirtyKey.lastIndexOf(":");
+            const dataDir = dirtyKey.slice(0, separatorIndex);
+            const dirtyTableName = dirtyKey.slice(separatorIndex + 1);
+            const collection = storedDataCache.get(dirtyKey)!;
             const collectionFilePath = path.resolve(
-                dataDirectory,
+                dataDir,
                 dirtyTableName + ".json",
             );
             writePromises.push(
@@ -56,10 +70,17 @@ function flushToDisk() {
         flushingLockPromise = null;
         resolve();
     });
+    return flushingLockPromise;
 }
 
 let flushTimeout: NodeJS.Timeout | undefined;
-function flushToDiskThrottled(wait = 5000) {
+function flushToDiskThrottled(defaultWait = 5000) {
+    const isMultiworkerOrTest =
+        Boolean(process.env.ALLOW_FILESYSTEM_MULTIWORKER) ||
+        Boolean(process.env.DATA_DIR) ||
+        process.env.NODE_ENV === "test";
+    const wait = isMultiworkerOrTest ? 0 : defaultWait;
+
     const diffToLastFlush = Date.now() - lastFlush;
     if (diffToLastFlush < wait) {
         if (flushTimeout) {
@@ -78,13 +99,15 @@ function flushToDiskThrottled(wait = 5000) {
 export async function getFileSystemCollection(
     table: PgTableWithColumns<any>,
 ): Promise<FileSystemCollection> {
+    const dataDirectory = getDataDirectory();
     await fs.promises.mkdir(dataDirectory, { recursive: true });
     const tableName = getTableName(table);
-    let fsCollectionStoredData = storedDataCache.get(tableName);
+    const cacheKey = `${dataDirectory}:${tableName}`;
+    let fsCollectionStoredData = storedDataCache.get(cacheKey);
 
     const markAsDirty = async () => {
         if (flushingLockPromise) await flushingLockPromise;
-        dirtyCollectionsData.add(tableName);
+        dirtyCollectionsData.add(cacheKey);
         flushToDiskThrottled();
     };
 
@@ -107,7 +130,7 @@ export async function getFileSystemCollection(
             ) as FileSystemCollectionStoredData;
         } catch {}
 
-        storedDataCache.set(tableName, fsCollectionStoredData);
+        storedDataCache.set(cacheKey, fsCollectionStoredData);
     }
 
     const idType = getTableConfig(table).columns.find(

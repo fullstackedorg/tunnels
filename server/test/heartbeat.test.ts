@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert";
 import * as ws from "ws";
-import crypto from "node:crypto";
 import { setupTestServer } from "./helpers.ts";
 import * as connect from "../src/connect.ts";
 import * as warden from "../src/warden/index.ts";
@@ -12,7 +11,7 @@ const PORT = 3470;
 process.env.HEARTBEAT_INTERVAL = "200"; // fast heartbeats for testing
 await setupTestServer(PORT);
 
-test("Lifeline heartbeat updates heartbeat status on both Warden and Connecting Machine", async () => {
+test("Lifeline heartbeat updates heartbeat status on both Warden and Connecting Machine", async (t) => {
     // 1. Register a Machine
     const machineRes = await fetch(`http://127.0.0.1:${PORT}/machines`, {
         method: "POST",
@@ -32,8 +31,16 @@ test("Lifeline heartbeat updates heartbeat status on both Warden and Connecting 
 
     const connectPromise = connect.connectToRelay();
 
+    t.after(async () => {
+        connect.stopConnectToRelay();
+        await connectPromise;
+    });
+
     // 3. Wait for connection to establish
-    await new Promise((r) => setTimeout(r, 1000));
+    for (let i = 0; i < 40; i++) {
+        if (await warden.isMachineConnected(machine)) break;
+        await new Promise((r) => setTimeout(r, 50));
+    }
 
     // Verify machine is connected
     const connected = await warden.isMachineConnected(machine);
@@ -87,8 +94,14 @@ test("Lifeline heartbeat updates heartbeat status on both Warden and Connecting 
 
     // 8. Stop connection and verify status reflects disconnection
     connect.stopConnectToRelay();
-    await connectPromise.catch(() => {});
-    await new Promise((r) => setTimeout(r, 700));
+    await connectPromise;
+
+    for (let i = 0; i < 40; i++) {
+        const wardenStatus = await warden.getMachineHeartbeatStatus(machine.id);
+        const connected = await warden.isMachineConnected(machine);
+        if (wardenStatus === null && !connected) break;
+        await new Promise((r) => setTimeout(r, 50));
+    }
 
     const machineStatusAfterStop = connect.getHeartbeatStatus();
     assert.strictEqual(machineStatusAfterStop.alive, false);
@@ -106,74 +119,97 @@ test("Lifeline heartbeat updates heartbeat status on both Warden and Connecting 
     assert.strictEqual(connectedAfterStop, false);
 });
 
-test("Warden terminates dead lifeline when ping is unacknowledged", async () => {
+test("Warden terminates dead lifeline when ping is unacknowledged", async (t) => {
     let rawWs: ws.WebSocket | null = null;
-    try {
-        // 1. Create a dummy machine via API
-        const machineRes = await fetch(`http://127.0.0.1:${PORT}/machines`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                name: "test-dead-machine",
-            }),
-        });
-        assert.strictEqual(machineRes.status, 200);
-        const machine = (await machineRes.json()) as Machine;
-        await kv.set(`machines:${machine.token}`, machine);
-
-        // 2. Connect a raw websocket client that ignores pings (does not auto-respond or drops pong)
-        rawWs = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
-            headers: {
-                Authorization: machine.token,
-                version: "1.0.0",
-            },
-        });
-
-        await new Promise<void>((resolve, reject) => {
-            rawWs!.on("open", resolve);
-            rawWs!.on("error", reject);
-        });
-
-        // Give a brief tick for server upgrade completion
-        await new Promise((r) => setTimeout(r, 100));
-
-        // Verify machine is initially connected
-        assert.strictEqual(await warden.isMachineConnected(machine), true);
-        const initialStatus = await warden.getMachineHeartbeatStatus(
-            machine.id,
-        );
-        assert.ok(initialStatus?.alive);
-
-        // Block pong from being sent
-        (rawWs as any).pong = () => {};
-
-        // Wait for heartbeat interval (HEARTBEAT_INTERVAL is 200ms, so 700ms is enough for missed ping detection)
-        await new Promise((r) => setTimeout(r, 700));
-
-        // The warden should have detected missed heartbeat and terminated the ws
-        const isConnected = await warden.isMachineConnected(machine);
-        assert.strictEqual(
-            isConnected,
-            false,
-            "Warden should have terminated dead lifeline",
-        );
-
-        const statusAfterDead = await warden.getMachineHeartbeatStatus(
-            machine.id,
-        );
-        assert.strictEqual(
-            statusAfterDead,
-            null,
-            "Warden heartbeat status should be cleaned up",
-        );
-    } finally {
+    t.after(() => {
         rawWs?.close();
+    });
+
+    // 1. Create a dummy machine via API
+    const machineRes = await fetch(`http://127.0.0.1:${PORT}/machines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: "test-dead-machine",
+        }),
+    });
+    assert.strictEqual(machineRes.status, 200);
+    const machine = (await machineRes.json()) as Machine;
+    await kv.set(`machines:${machine.token}`, machine);
+
+    // 2. Connect a raw websocket client that ignores pings (does not auto-respond or drops pong)
+    rawWs = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+        headers: {
+            Authorization: machine.token,
+            version: "1.0.0",
+        },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+        rawWs!.on("open", resolve);
+        rawWs!.on("error", reject);
+    });
+
+    // Give a brief tick for server upgrade completion
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Verify machine is initially connected
+    assert.strictEqual(await warden.isMachineConnected(machine), true);
+    const initialStatus = await warden.getMachineHeartbeatStatus(machine.id);
+    assert.ok(initialStatus?.alive);
+
+    // Block pong from being sent
+    (rawWs as any).pong = () => {};
+
+    // Wait for heartbeat interval (HEARTBEAT_INTERVAL is 200ms) to detect missed ping and terminate
+    for (let i = 0; i < 40; i++) {
+        const isConnected = await warden.isMachineConnected(machine);
+        const status = await warden.getMachineHeartbeatStatus(machine.id);
+        if (!isConnected && status === null) break;
+        await new Promise((r) => setTimeout(r, 50));
     }
+
+    // The warden should have detected missed heartbeat and terminated the ws
+    const isConnected = await warden.isMachineConnected(machine);
+    assert.strictEqual(
+        isConnected,
+        false,
+        "Warden should have terminated dead lifeline",
+    );
+
+    const statusAfterDead = await warden.getMachineHeartbeatStatus(machine.id);
+    assert.strictEqual(
+        statusAfterDead,
+        null,
+        "Warden heartbeat status should be cleaned up",
+    );
 });
 
-test("Connecting machine terminates lifeline when relay ping is unacknowledged", async () => {
+test("Connecting machine terminates lifeline when relay ping is unacknowledged", async (t) => {
+    let mockWss: ws.WebSocketServer | null = null;
+    let connectPromise: Promise<void> | null = null;
+
+    t.after(async () => {
+        connect.stopConnectToRelay();
+        if (connectPromise) {
+            await connectPromise;
+        }
+        if (mockWss) {
+            await new Promise<void>((resolve) =>
+                mockWss!.close(() => resolve()),
+            );
+        }
+    });
+
     // Create a mock relay WebSocket server that does NOT send pongs back
-    const mockWss = new ws.WebSocketServer({ port: 0 });
+    mockWss = await new Promise<ws.WebSocketServer>((resolve) => {
+        const server = new ws.WebSocketServer(
+            { port: 0, host: "127.0.0.1" },
+            () => {
+                resolve(server);
+            },
+        );
+    });
     const mockPort = (mockWss.address() as any).port;
 
     mockWss.on("connection", (socket) => {
@@ -185,21 +221,27 @@ test("Connecting machine terminates lifeline when relay ping is unacknowledged",
     process.env.TOKEN = "test-token";
     process.env.HEARTBEAT_INTERVAL = "200";
 
-    const connectPromise = connect.connectToRelay();
+    connectPromise = connect.connectToRelay();
 
     // Wait for connection to establish
-    await new Promise((r) => setTimeout(r, 100));
+    for (let i = 0; i < 40; i++) {
+        if (connect.getHeartbeatStatus().alive) break;
+        await new Promise((r) => setTimeout(r, 25));
+    }
 
     // Initially connecting machine status is alive
     const initialStatus = connect.getHeartbeatStatus();
     assert.strictEqual(initialStatus.alive, true);
 
-    // Wait for connecting machine's heartbeat watchdog (200ms interval -> after 700ms missed ping causes terminate)
-    await new Promise((r) => setTimeout(r, 600));
+    // Wait for connecting machine's heartbeat watchdog (200ms interval -> missed ping causes terminate)
+    for (let i = 0; i < 40; i++) {
+        if (!connect.getHeartbeatStatus().alive) break;
+        await new Promise((r) => setTimeout(r, 50));
+    }
 
     // Stop connect loop so it does not reconnect
     connect.stopConnectToRelay();
-    await connectPromise.catch(() => {});
+    await connectPromise;
 
     const statusAfterMissed = connect.getHeartbeatStatus();
     assert.strictEqual(
@@ -207,8 +249,6 @@ test("Connecting machine terminates lifeline when relay ping is unacknowledged",
         false,
         "Connecting machine should mark alive=false on missed heartbeat",
     );
-
-    await new Promise<void>((resolve) => mockWss.close(() => resolve()));
 });
 
 test.after(() => {

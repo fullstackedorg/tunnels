@@ -2,7 +2,7 @@ import cluster from "node:cluster";
 import { getEnvOrArgCLI } from "./utils/args.ts";
 import { createServerHTTP, stopServerHTTP } from "./http/index.ts";
 import { logger } from "./utils/logger.ts";
-import type { WardenMessageIPC } from "./warden/index.ts";
+import { stopWarden, type WardenMessageIPC } from "./warden/index.ts";
 import net from "node:net";
 
 let workers: cluster.Worker[] | null = null;
@@ -12,6 +12,9 @@ export async function startRelay() {
         getEnvOrArgCLI(["WORKERS", "workers", "w"], "number") || 1;
 
     if (cluster.isWorker || workerCount === 1) {
+        if (cluster.isWorker) {
+            process.on("disconnect", () => process.exit(0));
+        }
         return createServerHTTP();
     }
 
@@ -48,8 +51,9 @@ export async function startRelay() {
     });
 }
 
-export function stopRelay() {
-    stopServerHTTP();
+export async function stopRelay() {
+    stopWarden();
+    await stopServerHTTP();
     workers?.forEach((w) => w.kill());
     workers = null;
 }

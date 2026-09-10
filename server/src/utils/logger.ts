@@ -35,6 +35,10 @@ export class Logger {
         return Boolean(quietArg);
     }
 
+    public getBreadcrumbs(): Breadcrumb[] {
+        return this.breadcrumbs;
+    }
+
     public info(
         category: string,
         message: string,
@@ -42,7 +46,9 @@ export class Logger {
     ): void {
         this.addBreadcrumb(category, "info", message, metadata);
         if (!this.isQuiet) {
-            console.log(`[${category}] ${message}`);
+            console.log(
+                `[${new Date().toISOString()}] [${category}] ${message}`,
+            );
         }
     }
 
@@ -53,7 +59,9 @@ export class Logger {
     ): void {
         this.addBreadcrumb(category, "warn", message, metadata);
         if (!this.isQuiet) {
-            console.warn(`[${category}] ${message}`);
+            console.warn(
+                `[${new Date().toISOString()}] [${category}] ${message}`,
+            );
         }
     }
 
@@ -71,14 +79,16 @@ export class Logger {
 
         if (!isQuiet) {
             console.error(
-                `--- BREADCRUMBS DUMP (${category || "ALL CATEGORIES"}) ---`,
+                `[${new Date().toISOString()}] --- BREADCRUMBS DUMP (${category || "ALL CATEGORIES"}) ---`,
             );
             relevant.forEach((b) =>
                 console.error(
                     `[${b.timestamp}] [${b.category}] [${b.level.toUpperCase()}]: ${b.message}`,
                 ),
             );
-            console.error(`--- ERROR DETAILS ---`);
+            console.error(
+                `[${new Date().toISOString()}] --- ERROR DETAILS ---`,
+            );
             console.error(message, ...args);
         }
     }

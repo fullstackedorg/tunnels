@@ -49,6 +49,14 @@ export function tunnelProxy(
         pipeline(proxyRes, res, () => {});
     });
 
+    proxyReq.setTimeout(10000, () => {
+        logger.warn(
+            Component,
+            `Proxy request timed out for [${proxy.name} (${proxy.id})]`,
+        );
+        proxyReq.destroy(new Error("Proxy request timeout"));
+    });
+
     proxyReq.on("error", (err) => {
         logger.error(Component, `Proxy request error: ${err.message}`);
         if (!res.headersSent) {

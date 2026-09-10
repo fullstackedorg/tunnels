@@ -1,5 +1,5 @@
 {
-    "version": "0.0.1-main.15",
+    "version": "0.0.1-main.18",
     "scripts": {
         "start": "node src/main.ts",
         "test": "node --test test/*.test.ts",

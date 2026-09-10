@@ -2,6 +2,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { after } from "node:test";
 
+import { clearStoredDataCache } from "../src/storage/index.ts";
+
 export async function setupTestServer(port: number) {
     process.env.PORT = port.toString();
     const testDataDir = path.resolve(`./test-data-dir-${port}`);
@@ -12,7 +14,8 @@ export async function setupTestServer(port: number) {
     await server.start();
 
     after(async () => {
-        server.stop();
+        await server.stop();
+        clearStoredDataCache();
         await fs.promises.rm(testDataDir, { recursive: true, force: true });
     });
 

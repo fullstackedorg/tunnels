@@ -7,7 +7,7 @@ import { setupTestServer } from "./helpers.ts";
 const PORT = 3456;
 await setupTestServer(PORT);
 
-test("Tunnel service round-trip socket piping e2e - string payload", async () => {
+test("Tunnel service round-trip socket piping e2e - string payload", async (t) => {
     // 1. Spawn a TCP socket server (Echo server)
     let receivedDataBySocketServer = false;
     const socketServer = net.createServer((socket) => {
@@ -17,9 +17,19 @@ test("Tunnel service round-trip socket piping e2e - string payload", async () =>
         socket.pipe(socket);
     });
 
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const socketAddress = socketServer.address() as net.AddressInfo;
     const socketPort = socketAddress.port;
+
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        wsClient?.close();
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+    });
 
     // 2. Register service via HTTP API
     const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
@@ -38,15 +48,15 @@ test("Tunnel service round-trip socket piping e2e - string payload", async () =>
     assert.ok(service.token, "Service token missing");
 
     // 3. Connect via WebSocket through the tunnel server
-    const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: {
             Authorization: service.token,
         },
     });
 
     await new Promise<void>((resolve, reject) => {
-        wsClient.on("open", resolve);
-        wsClient.on("error", reject);
+        wsClient!.on("open", resolve);
+        wsClient!.on("error", reject);
     });
 
     // 4. Pass data round trip
@@ -56,11 +66,11 @@ test("Tunnel service round-trip socket piping e2e - string payload", async () =>
             () => reject(new Error("Round trip timed out")),
             5000,
         );
-        wsClient.on("message", (data) => {
+        wsClient!.on("message", (data) => {
             clearTimeout(timeout);
             resolve(data.toString());
         });
-        wsClient.on("error", (err) => {
+        wsClient!.on("error", (err) => {
             clearTimeout(timeout);
             reject(err);
         });
@@ -80,13 +90,9 @@ test("Tunnel service round-trip socket piping e2e - string payload", async () =>
         receivedDataBySocketServer,
         "TCP socket server should have received the string data",
     );
-
-    // Cleanup
-    wsClient.close();
-    await new Promise<void>((resolve) => socketServer.close(() => resolve()));
 });
 
-test("Tunnel service round-trip socket piping e2e - binary buffer payload", async () => {
+test("Tunnel service round-trip socket piping e2e - binary buffer payload", async (t) => {
     // 1. Spawn a TCP socket server (Echo server)
     let receivedDataBySocketServer = false;
     const socketServer = net.createServer((socket) => {
@@ -96,9 +102,19 @@ test("Tunnel service round-trip socket piping e2e - binary buffer payload", asyn
         socket.pipe(socket);
     });
 
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const socketAddress = socketServer.address() as net.AddressInfo;
     const socketPort = socketAddress.port;
+
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        wsClient?.close();
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+    });
 
     // 2. Register service via HTTP API
     const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
@@ -117,15 +133,15 @@ test("Tunnel service round-trip socket piping e2e - binary buffer payload", asyn
     assert.ok(service.token, "Service token missing");
 
     // 3. Connect via WebSocket through the tunnel server
-    const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: {
             Authorization: service.token,
         },
     });
 
     await new Promise<void>((resolve, reject) => {
-        wsClient.on("open", resolve);
-        wsClient.on("error", reject);
+        wsClient!.on("open", resolve);
+        wsClient!.on("error", reject);
     });
 
     // 4. Pass binary buffer round trip
@@ -137,11 +153,11 @@ test("Tunnel service round-trip socket piping e2e - binary buffer payload", asyn
             () => reject(new Error("Round trip timed out")),
             5000,
         );
-        wsClient.on("message", (data: Buffer) => {
+        wsClient!.on("message", (data: Buffer) => {
             clearTimeout(timeout);
             resolve(Buffer.from(data));
         });
-        wsClient.on("error", (err) => {
+        wsClient!.on("error", (err) => {
             clearTimeout(timeout);
             reject(err);
         });
@@ -161,8 +177,4 @@ test("Tunnel service round-trip socket piping e2e - binary buffer payload", asyn
         receivedDataBySocketServer,
         "TCP socket server should have received the binary data",
     );
-
-    // Cleanup
-    wsClient.close();
-    await new Promise<void>((resolve) => socketServer.close(() => resolve()));
 });

@@ -8,6 +8,7 @@ import packageJSON from "../package.json" with { type: "json" };
 import type { RelayedServiceRequest } from "./warden/index.ts";
 import { createWebSocketStream } from "./utils/ws.ts";
 import cluster from "node:cluster";
+import crypto from "node:crypto";
 import { logger } from "./utils/logger.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -16,6 +17,11 @@ export type HeartbeatStatus = {
     alive: boolean;
     lastHeartbeat: number | null;
     latency?: number | null;
+};
+
+type ConnectIPCMessage = {
+    reqId: string;
+    data: string;
 };
 
 let lifeline: ws.WebSocket | null = null;
@@ -33,6 +39,48 @@ export function getHeartbeatStatus(): HeartbeatStatus {
 
 let nextWorkerIndex = 0;
 let workers: cluster.Worker[] | null = null;
+let workerActiveRequests: number[] = [];
+
+export function getWorkerActiveRequests(): number[] {
+    return [...workerActiveRequests];
+}
+
+function getLeastBusyWorkerIndex(): number {
+    if (!workers || workers.length === 0) return 0;
+    let minLoad = Infinity;
+    let minIndex = 0;
+
+    for (let i = 0; i < workers.length; i++) {
+        const idx = (nextWorkerIndex + i) % workers.length;
+        if (workerActiveRequests[idx] < minLoad) {
+            minLoad = workerActiveRequests[idx];
+            minIndex = idx;
+        }
+    }
+
+    nextWorkerIndex = (minIndex + 1) % workers.length;
+    return minIndex;
+}
+
+function attachWorkerListeners(worker: cluster.Worker) {
+    worker.on("message", (msg: any) => {
+        if (msg && msg.type === "request_completed") {
+            if (workers) {
+                const index = workers.indexOf(worker);
+                if (index !== -1 && workerActiveRequests[index] !== undefined) {
+                    workerActiveRequests[index] = Math.max(
+                        0,
+                        workerActiveRequests[index] - 1,
+                    );
+                    logger.info(
+                        "ConnectToRelay",
+                        `Worker ${index} completed request ${msg.reqId}, active: ${workerActiveRequests[index]}`,
+                    );
+                }
+            }
+        }
+    });
+}
 
 async function singleConnectToRelay(relayUrl: string) {
     if (lifeline !== null) {
@@ -112,6 +160,7 @@ async function singleConnectToRelay(relayUrl: string) {
                 pingSentTime = Date.now();
                 wsInstance?.ping();
             }, heartbeatInterval);
+            heartbeatTimer.unref();
         });
 
         wsInstance.on("pong", () => {
@@ -135,7 +184,10 @@ async function singleConnectToRelay(relayUrl: string) {
         });
 
         wsInstance.on("close", handleDisconnect);
-        wsInstance.on("error", handleDisconnect);
+        wsInstance.on("error", (err) => {
+            logger.warn("ConnectToRelay", `Connection error: ${err.message}`);
+            handleDisconnect();
+        });
         wsInstance.on("message", onMessage);
     });
 }
@@ -152,6 +204,7 @@ export function stopConnectToRelay() {
     current?.terminate();
     workers?.forEach((w) => w.kill());
     workers = null;
+    workerActiveRequests = [];
 }
 
 let relayUrl: string | undefined;
@@ -164,6 +217,8 @@ export async function connectToRelay() {
     }
 
     if (cluster.isWorker) {
+        process.on("disconnect", () => process.exit(0));
+        process.on("error", () => {});
         process.on("message", onMessage);
         return;
     }
@@ -171,6 +226,8 @@ export async function connectToRelay() {
     const workerCount = getEnvOrArgCLI(["WORKERS", "workers", "w"], "number");
     if (workerCount) {
         workers = new Array(workerCount).fill(null).map(() => cluster.fork());
+        workerActiveRequests = new Array(workerCount).fill(0);
+        workers.forEach((w) => attachWorkerListeners(w));
         logger.info("ConnectToRelay", `Created ${workerCount} workers`);
 
         cluster.on("exit", (worker) => {
@@ -181,7 +238,10 @@ export async function connectToRelay() {
                     "ConnectToRelay",
                     `Worker ${index} exited, replacing...`,
                 );
-                workers[index] = cluster.fork();
+                workerActiveRequests[index] = 0;
+                const newWorker = cluster.fork();
+                workers[index] = newWorker;
+                attachWorkerListeners(newWorker);
             }
         });
     }
@@ -199,26 +259,74 @@ export async function connectToRelay() {
     }
 }
 
-async function onMessage(data: string) {
+function notifyRequestCompleted(reqId: string | null) {
+    if (!reqId || !process.send || !process.connected) return;
+    try {
+        process.send({ reqId, type: "request_completed" }, () => {});
+    } catch {
+        // Parent IPC channel may be disconnected or closed
+    }
+}
+
+async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
     if (workers) {
-        const workerIndex = nextWorkerIndex;
-        nextWorkerIndex = (nextWorkerIndex + 1) % workers.length;
-        workers[workerIndex].send(data.toString());
+        const rawData = input.toString();
+        const reqId = crypto.randomUUID();
+        const workerIndex = getLeastBusyWorkerIndex();
+        workerActiveRequests[workerIndex]++;
+        workers[workerIndex].send({ reqId, data: rawData });
         logger.info(
             "ConnectToRelay",
-            `Forwarding message to worker ${workerIndex}`,
+            `Forwarding message ${reqId} to worker ${workerIndex} (active: ${workerActiveRequests[workerIndex]})`,
         );
         return;
     }
 
-    const message = JSON.parse(data.toString()) as RelayedServiceRequest;
+    let reqId: string | null = null;
+    let rawJson: string;
+
+    if (
+        typeof input === "object" &&
+        input !== null &&
+        !Buffer.isBuffer(input) &&
+        "data" in input &&
+        "reqId" in input
+    ) {
+        reqId = (input as ConnectIPCMessage).reqId;
+        rawJson = (input as ConnectIPCMessage).data;
+    } else {
+        rawJson = input.toString();
+    }
+
+    let message: RelayedServiceRequest;
+    try {
+        message = JSON.parse(rawJson) as RelayedServiceRequest;
+    } catch (err) {
+        logger.error(
+            "ConnectToRelay",
+            `Failed to parse relayed request JSON: ${err}`,
+        );
+        notifyRequestCompleted(reqId);
+        return;
+    }
+
+    if (!relayUrl) {
+        logger.error("ConnectToRelay", "Relay URL is not defined in onMessage");
+        notifyRequestCompleted(reqId);
+        return;
+    }
+
+    const socketTimeout =
+        getEnvOrArgCLI(["SOCKET_TIMEOUT", "socket-timeout"], "number") ?? 30000;
 
     const socket = net.createConnection({
         host: message.service.internalHost,
         port: message.service.internalPort,
     });
 
-    const websocket = new ws.WebSocket(relayUrl!, {
+    socket.setTimeout(socketTimeout);
+
+    const websocket = new ws.WebSocket(relayUrl, {
         headers: {
             authorization: message.token,
         },
@@ -226,15 +334,33 @@ async function onMessage(data: string) {
 
     const duplex = createWebSocketStream(websocket);
 
+    let isCleanedUp = false;
     const cleanup = () => {
+        if (isCleanedUp) return;
+        isCleanedUp = true;
         socket.destroy();
         duplex.destroy();
         websocket.close();
+        notifyRequestCompleted(reqId);
     };
 
-    socket.on("error", cleanup);
-    websocket.on("error", cleanup);
+    socket.on("timeout", () => {
+        logger.warn(
+            "ConnectToRelay",
+            `Socket timed out after ${socketTimeout}ms`,
+        );
+        cleanup();
+    });
 
-    pipeline(duplex, socket, () => {});
-    pipeline(socket, duplex, () => {});
+    socket.on("error", cleanup);
+    socket.on("close", cleanup);
+    websocket.on("error", cleanup);
+    websocket.on("close", cleanup);
+
+    pipeline(duplex, socket, () => {
+        cleanup();
+    });
+    pipeline(socket, duplex, () => {
+        cleanup();
+    });
 }

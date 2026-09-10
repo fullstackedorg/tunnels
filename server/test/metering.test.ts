@@ -9,27 +9,41 @@ import { setupTestServer } from "./helpers.ts";
 const PORT = 3462;
 await setupTestServer(PORT);
 
-test("Tunnel service - data metering via tunnel_service hook without losing bytes", async () => {
+test("Tunnel service - data metering via tunnel_service hook without losing bytes", async (t) => {
     let serviceIncomingBytes = 0;
     let serviceOutgoingBytes = 0;
 
-    registerHook("tunnel_service", async (_req, _service, duplex, socket) => {
-        duplex.on("data", (chunk: Buffer) => {
-            serviceIncomingBytes += chunk.length;
-        });
-        socket.on("data", (chunk: Buffer) => {
-            serviceOutgoingBytes += chunk.length;
-        });
-    });
+    const unregisterHook = registerHook(
+        "tunnel_service",
+        async (_req, _service, duplex, socket) => {
+            duplex.on("data", (chunk: Buffer) => {
+                serviceIncomingBytes += chunk.length;
+            });
+            socket.on("data", (chunk: Buffer) => {
+                serviceOutgoingBytes += chunk.length;
+            });
+        },
+    );
 
     // 1. Spawn a TCP socket server (Echo server)
     const socketServer = net.createServer((socket) => {
         socket.pipe(socket);
     });
 
-    await new Promise<void>((resolve) => socketServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        socketServer.listen(0, "127.0.0.1", resolve),
+    );
     const socketAddress = socketServer.address() as net.AddressInfo;
     const socketPort = socketAddress.port;
+
+    let wsClient: ws.WebSocket | null = null;
+    t.after(async () => {
+        wsClient?.close();
+        await new Promise<void>((resolve) =>
+            socketServer.close(() => resolve()),
+        );
+        unregisterHook();
+    });
 
     // 2. Register service via HTTP API
     const serviceRes = await fetch(`http://127.0.0.1:${PORT}/services`, {
@@ -48,15 +62,15 @@ test("Tunnel service - data metering via tunnel_service hook without losing byte
     assert.ok(service.token, "Service token missing");
 
     // 3. Connect via WebSocket through the tunnel server
-    const wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
+    wsClient = new ws.WebSocket(`ws://127.0.0.1:${PORT}`, {
         headers: {
             Authorization: service.token,
         },
     });
 
     await new Promise<void>((resolve, reject) => {
-        wsClient.on("open", resolve);
-        wsClient.on("error", reject);
+        wsClient!.on("open", resolve);
+        wsClient!.on("error", reject);
     });
 
     // 4. Send payload of exact known size (50,000 bytes)
@@ -72,7 +86,7 @@ test("Tunnel service - data metering via tunnel_service hook without losing byte
             5000,
         );
 
-        wsClient.on("message", (data: Buffer) => {
+        wsClient!.on("message", (data: Buffer) => {
             const buf = Buffer.from(data);
             receivedChunks.push(buf);
             totalReceivedBytes += buf.length;
@@ -83,7 +97,7 @@ test("Tunnel service - data metering via tunnel_service hook without losing byte
             }
         });
 
-        wsClient.on("error", (err) => {
+        wsClient!.on("error", (err) => {
             clearTimeout(timeout);
             reject(err);
         });
@@ -115,46 +129,45 @@ test("Tunnel service - data metering via tunnel_service hook without losing byte
         payloadSize,
         "Outgoing bytes metered by tunnel_service hook must equal echoed payload size",
     );
-
-    // Cleanup
-    wsClient.close();
-    await new Promise<void>((resolve) => socketServer.close(() => resolve()));
 });
 
-test("Tunnel proxy - data metering via tunnel_proxy hook without losing bytes", async () => {
+test("Tunnel proxy - data metering via tunnel_proxy hook without losing bytes", async (t) => {
     let proxyIncomingBytes = 0;
     let proxyOutgoingBytes = 0;
 
-    registerHook("tunnel_proxy", async (_req, _proxy, res) => {
-        _req.on("data", (chunk: Buffer) => {
-            proxyIncomingBytes += chunk.length;
-        });
+    const unregisterHook = registerHook(
+        "tunnel_proxy",
+        async (_req, _proxy, res) => {
+            _req.on("data", (chunk: Buffer) => {
+                proxyIncomingBytes += chunk.length;
+            });
 
-        const originalWrite = res.write;
-        const originalEnd = res.end;
+            const originalWrite = res.write;
+            const originalEnd = res.end;
 
-        res.write = function (chunk: any, ...args: any[]) {
-            if (chunk) {
-                const len =
-                    typeof chunk === "string"
-                        ? Buffer.byteLength(chunk)
-                        : chunk.length;
-                proxyOutgoingBytes += len;
-            }
-            return originalWrite.apply(res, [chunk, ...args] as any);
-        };
+            res.write = function (chunk: any, ...args: any[]) {
+                if (chunk) {
+                    const len =
+                        typeof chunk === "string"
+                            ? Buffer.byteLength(chunk)
+                            : chunk.length;
+                    proxyOutgoingBytes += len;
+                }
+                return originalWrite.apply(res, [chunk, ...args] as any);
+            };
 
-        res.end = function (chunk?: any, ...args: any[]) {
-            if (chunk && typeof chunk !== "function") {
-                const len =
-                    typeof chunk === "string"
-                        ? Buffer.byteLength(chunk)
-                        : chunk.length;
-                proxyOutgoingBytes += len;
-            }
-            return originalEnd.apply(res, [chunk, ...args] as any);
-        };
-    });
+            res.end = function (chunk?: any, ...args: any[]) {
+                if (chunk && typeof chunk !== "function") {
+                    const len =
+                        typeof chunk === "string"
+                            ? Buffer.byteLength(chunk)
+                            : chunk.length;
+                    proxyOutgoingBytes += len;
+                }
+                return originalEnd.apply(res, [chunk, ...args] as any);
+            };
+        },
+    );
 
     // 1. Spawn a target HTTP server to echo request body with fixed response payload
     const responsePayloadSize = 30000;
@@ -178,8 +191,17 @@ test("Tunnel proxy - data metering via tunnel_proxy hook without losing bytes", 
         });
     });
 
-    await new Promise<void>((resolve) => targetServer.listen(0, resolve));
+    await new Promise<void>((resolve) =>
+        targetServer.listen(0, "127.0.0.1", resolve),
+    );
     const targetPort = (targetServer.address() as net.AddressInfo).port;
+
+    t.after(async () => {
+        await new Promise<void>((resolve) =>
+            targetServer.close(() => resolve()),
+        );
+        unregisterHook();
+    });
 
     // 2. Register proxy via HTTP API
     const proxyRes = await fetch(`http://127.0.0.1:${PORT}/proxies`, {
@@ -209,6 +231,7 @@ test("Tunnel proxy - data metering via tunnel_proxy hook without losing bytes", 
             "Content-Type": "text/plain",
         },
         body: postPayload,
+        signal: AbortSignal.timeout(10000),
     });
 
     assert.strictEqual(res.status, 200, "Proxy POST request failed");
@@ -231,7 +254,4 @@ test("Tunnel proxy - data metering via tunnel_proxy hook without losing bytes", 
         responsePayloadSize,
         "Outgoing bytes metered by tunnel_proxy hook must equal response payload size",
     );
-
-    // Cleanup
-    await new Promise<void>((resolve) => targetServer.close(() => resolve()));
 });

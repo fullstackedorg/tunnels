@@ -3,7 +3,7 @@ import { logger } from "./utils/logger.ts";
 
 type SERVER_TYPE = "relay" | "connected-to-relay";
 
-let stopProcess: (() => void) | null = null;
+let stopProcess: (() => Promise<void> | void) | null = null;
 
 export async function start() {
     const serverType: SERVER_TYPE = getEnvOrArgCLI(["RELAY_URL", "relay-url"])
@@ -24,6 +24,6 @@ export async function start() {
     logger.info("Main", `Server type: ${serverType}`);
 }
 
-export function stop() {
-    stopProcess?.();
+export async function stop() {
+    await stopProcess?.();
 }

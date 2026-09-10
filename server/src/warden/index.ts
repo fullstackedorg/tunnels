@@ -213,6 +213,7 @@ export async function lifelineRequest(
         pingSentTime = Date.now();
         ws.ping();
     }, heartbeatInterval);
+    heartbeatTimer.unref();
 
     ws.on("pong", async () => {
         isAlive = true;
@@ -253,6 +254,14 @@ export async function lifelineRequest(
 
     await executeHook("machine_connect", req);
     req.socket.resume();
+}
+
+export function stopWarden() {
+    for (const [id, ws] of machineLifelines) {
+        ws.terminate();
+    }
+    machineLifelines.clear();
+    machineHeartbeats.clear();
 }
 
 const relayedServiceRequests = new Map<string, (ws: stream.Duplex) => void>();
