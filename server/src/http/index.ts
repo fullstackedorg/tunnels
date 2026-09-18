@@ -1,5 +1,7 @@
 import http from "node:http";
-import { registerRoute, restApiRequest } from "../api/index.ts";
+import crypto from "node:crypto";
+import net from "node:net";
+import { registerRoute, respondJSON, restApiRequest } from "../api/index.ts";
 import { getEnvOrArgCLI } from "../utils/args.ts";
 import { logger } from "../utils/logger.ts";
 import { executeHook, registerHook } from "../utils/hooks.ts";
@@ -29,10 +31,39 @@ const deniedRawResponse = [
 
 export type IncomingMessageWithDeny = http.IncomingMessage & {
     deny: () => void;
+    id: string;
 };
 
+export function createIncomingMessageWithDeny(options: {
+    id?: string;
+    socket?: net.Socket;
+    headers?: http.IncomingHttpHeaders;
+    url?: string;
+    method?: string;
+    deny?: () => void;
+} = {}): IncomingMessageWithDeny {
+    const socket = options.socket || new net.Socket();
+    const req = new http.IncomingMessage(socket) as IncomingMessageWithDeny;
+    req.id = options.id || crypto.randomUUID();
+    req.headers = options.headers || {};
+    req.url = options.url || "/";
+    req.method = options.method || "GET";
+    req.deny = options.deny || (() => {
+        try {
+            socket.destroy();
+        } catch {}
+        req.destroy();
+    });
+    return req;
+}
+
 function addDenyFunction(req: http.IncomingMessage) {
-    (req as IncomingMessageWithDeny).deny = () => {
+    const reqWithDeny = req as IncomingMessageWithDeny;
+    if (!reqWithDeny.id) {
+        reqWithDeny.id =
+            (req.headers["x-request-id"] as string) || crypto.randomUUID();
+    }
+    reqWithDeny.deny = () => {
         req.socket.write(deniedRawResponse, () => {
             req.socket.end();
         });

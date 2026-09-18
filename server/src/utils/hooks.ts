@@ -1,26 +1,29 @@
 import { logger } from "./logger.ts";
 import type { IncomingMessageWithDeny } from "../http/index.ts";
 
-type HookFunction = (
-    req: IncomingMessageWithDeny,
+export type HookFunction<T = IncomingMessageWithDeny> = (
+    req: T,
     ...args: any[]
 ) => Promise<void> | void;
 
-const hooks = new Map<string, HookFunction[]>();
+const hooks = new Map<string, HookFunction<any>[]>();
 
-export function registerHook(hook: string, func: HookFunction): () => void {
+export function registerHook<T = IncomingMessageWithDeny>(
+    hook: string,
+    func: HookFunction<T>,
+): () => void {
     if (!hooks.has(hook)) {
         hooks.set(hook, []);
     }
 
-    hooks.get(hook)!.push(func);
+    hooks.get(hook)!.push(func as HookFunction<any>);
 
     return () => {
-        removeHook(hook, func);
+        removeHook(hook, func as HookFunction<any>);
     };
 }
 
-export function removeHook(hook: string, func: HookFunction) {
+export function removeHook(hook: string, func: HookFunction<any>) {
     const list = hooks.get(hook);
     if (!list) return;
     const index = list.indexOf(func);
@@ -46,16 +49,34 @@ export function clearHooks(hook?: string) {
     }
 }
 
+function handleHookError(hook: string, err: any) {
+    const errorMsg = `Error in hook [${hook}]: ${err?.message || err}`;
+    if (hook !== "log") {
+        logger.error("Hook", errorMsg, err);
+    } else {
+        console.error(`[${new Date().toISOString()}] [Hook] ${errorMsg}`, err);
+    }
+}
+
 async function executeHookAsync(
     firstPromise: Promise<void>,
-    funcs: HookFunction[],
-    req: IncomingMessageWithDeny,
+    funcs: HookFunction<any>[],
+    req: IncomingMessageWithDeny | null,
+    hook: string,
     ...args: any[]
 ) {
-    await firstPromise;
+    try {
+        await firstPromise;
+    } catch (err: any) {
+        handleHookError(hook, err);
+    }
     for (const func of funcs) {
-        await func(req, ...args);
-        if (req.destroyed) {
+        try {
+            await func(req, ...args);
+        } catch (err: any) {
+            handleHookError(hook, err);
+        }
+        if (req?.destroyed) {
             return;
         }
     }
@@ -63,7 +84,7 @@ async function executeHookAsync(
 
 export function executeHook(
     hook: string,
-    req: IncomingMessageWithDeny,
+    req: IncomingMessageWithDeny | null,
     ...args: any[]
 ): Promise<void> | void {
     const funcs = hooks.get(hook);
@@ -71,19 +92,26 @@ export function executeHook(
         return;
     }
 
-    logger.info("Hook", `Executing ${funcs.length} hooks for ${hook}`);
+    if (hook !== "log") {
+        logger.info("Hook", `Executing ${funcs.length} hooks for ${hook}`);
+    }
     for (let i = 0; i < funcs.length; i++) {
         const func = funcs[i];
-        const maybePromise = func(req, ...args);
-        if (maybePromise instanceof Promise) {
-            return executeHookAsync(
-                maybePromise,
-                funcs.slice(i + 1),
-                req,
-                ...args,
-            );
+        try {
+            const maybePromise = func(req, ...args);
+            if (maybePromise instanceof Promise) {
+                return executeHookAsync(
+                    maybePromise,
+                    funcs.slice(i + 1),
+                    req,
+                    hook,
+                    ...args,
+                );
+            }
+        } catch (err: any) {
+            handleHookError(hook, err);
         }
-        if (req.destroyed) {
+        if (req?.destroyed) {
             return;
         }
     }

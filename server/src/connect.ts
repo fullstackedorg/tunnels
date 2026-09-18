@@ -10,6 +10,11 @@ import { createWebSocketStream } from "./utils/ws.ts";
 import cluster from "node:cluster";
 import crypto from "node:crypto";
 import { logger } from "./utils/logger.ts";
+import { executeHook } from "./utils/hooks.ts";
+import {
+    createIncomingMessageWithDeny,
+    type IncomingMessageWithDeny,
+} from "./http/index.ts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -64,7 +69,9 @@ function getLeastBusyWorkerIndex(): number {
 
 function attachWorkerListeners(worker: cluster.Worker) {
     worker.on("message", (msg: any) => {
-        if (msg && msg.type === "request_completed") {
+        if (!msg || typeof msg !== "object") return;
+
+        if (msg.type === "request_completed") {
             if (workers) {
                 const index = workers.indexOf(worker);
                 if (index !== -1 && workerActiveRequests[index] !== undefined) {
@@ -271,18 +278,30 @@ function notifyRequestCompleted(reqId: string | null) {
 async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
     if (workers) {
         const rawData = input.toString();
-        const reqId = crypto.randomUUID();
+        let parsedReqId: string | undefined;
+        try {
+            const parsed = JSON.parse(rawData);
+            if (parsed && parsed.reqId) parsedReqId = parsed.reqId;
+        } catch {}
+        const reqId = parsedReqId || crypto.randomUUID();
         const workerIndex = getLeastBusyWorkerIndex();
         workerActiveRequests[workerIndex]++;
         workers[workerIndex].send({ reqId, data: rawData });
+        let serviceInfo = "";
+        try {
+            const parsed = JSON.parse(rawData);
+            if (parsed && parsed.service) {
+                serviceInfo = ` for service "${parsed.service.name || parsed.service.id}" (${parsed.service.internalHost}:${parsed.service.internalPort})`;
+            }
+        } catch {}
         logger.info(
             "ConnectToRelay",
-            `Forwarding message ${reqId} to worker ${workerIndex} (active: ${workerActiveRequests[workerIndex]})`,
+            `Forwarding message ${reqId} to worker ${workerIndex} (active: ${workerActiveRequests[workerIndex]})${serviceInfo}`,
         );
         return;
     }
 
-    let reqId: string | null = null;
+    let reqId: string = "unknown";
     let rawJson: string;
 
     if (
@@ -310,57 +329,220 @@ async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
         return;
     }
 
+    if (message.reqId) {
+        reqId = message.reqId;
+    }
+
     if (!relayUrl) {
         logger.error("ConnectToRelay", "Relay URL is not defined in onMessage");
         notifyRequestCompleted(reqId);
         return;
     }
 
+    const service = message.service;
+    const workerLabel = cluster.isWorker
+        ? `Worker ${cluster.worker?.id ?? 0}`
+        : "SingleProcess";
+    const startTime = Date.now();
+    let bytesTargetToClient = 0;
+    let bytesClientToTarget = 0;
+    let isSocketConnected = false;
+    let isWsConnected = false;
+
     const socketTimeout =
         getEnvOrArgCLI(["SOCKET_TIMEOUT", "socket-timeout"], "number") ?? 30000;
+    const connectTimeoutMs =
+        getEnvOrArgCLI(
+            ["CONNECT_TIMEOUT", "connect-timeout"],
+            "number",
+        ) ?? 10000;
 
     const socket = net.createConnection({
-        host: message.service.internalHost,
-        port: message.service.internalPort,
+        host: service.internalHost,
+        port: service.internalPort,
     });
 
-    socket.setTimeout(socketTimeout);
+    socket.setKeepAlive(true, 15000);
+    socket.setNoDelay(true);
 
+    const req = createIncomingMessageWithDeny({
+        id: reqId,
+        socket,
+        headers: message.headers,
+        url: message.url || `/${service.name || service.id}`,
+        deny: () => {
+            socket.destroy();
+        },
+    });
+
+    logger.info(
+        "ConnectToRelay",
+        `[${workerLabel}] Starting request ${req.id || "direct"} for service "${service.name || service.id}" -> ${service.internalHost}:${service.internalPort}`,
+    );
+
+    await executeHook("machine_service_request", req, service);
+
+    if (req.destroyed) {
+        socket.destroy();
+        notifyRequestCompleted(reqId);
+        return;
+    }
+
+    let connectTimer: NodeJS.Timeout | null = setTimeout(() => {
+        if (!isSocketConnected) {
+            logger.warn(
+                "ConnectToRelay",
+                `[${workerLabel}] Target socket connect timed out after ${connectTimeoutMs}ms connecting to ${service.internalHost}:${service.internalPort} (reqId: ${reqId})`,
+            );
+            executeHook("machine_service_timeout", req, service, {
+                phase: "connect",
+                socketConnected: false,
+                bytesTargetToClient,
+                bytesClientToTarget,
+            });
+            cleanup("connect_timeout");
+        }
+    }, connectTimeoutMs);
+    connectTimer.unref();
+
+    socket.on("connect", () => {
+        if (connectTimer) {
+            clearTimeout(connectTimer);
+            connectTimer = null;
+        }
+        isSocketConnected = true;
+        const connectLatency = Date.now() - startTime;
+        logger.info(
+            "ConnectToRelay",
+            `[${workerLabel}] Target socket connected to ${service.internalHost}:${service.internalPort} in ${connectLatency}ms (reqId: ${reqId})`,
+        );
+        if (isWsConnected) {
+            executeHook(
+                "machine_service_connected",
+                req,
+                service,
+                duplex,
+                socket,
+            );
+        }
+    });
+
+    if (socketTimeout > 0) {
+        socket.setTimeout(socketTimeout);
+    }
+
+    const wsStartTime = Date.now();
     const websocket = new ws.WebSocket(relayUrl, {
         headers: {
             authorization: message.token,
         },
     });
 
+    websocket.on("open", () => {
+        isWsConnected = true;
+        const wsLatency = Date.now() - wsStartTime;
+        logger.info(
+            "ConnectToRelay",
+            `[${workerLabel}] Relay WebSocket tunnel opened in ${wsLatency}ms (reqId: ${reqId})`,
+        );
+        if (isSocketConnected) {
+            executeHook(
+                "machine_service_connected",
+                req,
+                service,
+                duplex,
+                socket,
+            );
+        }
+    });
+
     const duplex = createWebSocketStream(websocket);
 
     let isCleanedUp = false;
-    const cleanup = () => {
+    const cleanup = (reason: string = "normal") => {
         if (isCleanedUp) return;
         isCleanedUp = true;
+        if (connectTimer) {
+            clearTimeout(connectTimer);
+            connectTimer = null;
+        }
         socket.destroy();
         duplex.destroy();
         websocket.close();
         notifyRequestCompleted(reqId);
+        const duration = Date.now() - startTime;
+        logger.info(
+            "ConnectToRelay",
+            `[${workerLabel}] Completed request ${reqId || "direct"} for ${service.name} (duration: ${duration}ms, target->client: ${bytesTargetToClient}B, client->target: ${bytesClientToTarget}B, reason: ${reason})`,
+        );
+        executeHook("machine_service_end", req, service, {
+            durationMs: duration,
+            bytesIn: bytesClientToTarget,
+            bytesOut: bytesTargetToClient,
+            reason,
+        });
     };
 
     socket.on("timeout", () => {
         logger.warn(
             "ConnectToRelay",
-            `Socket timed out after ${socketTimeout}ms`,
+            `[${workerLabel}] Socket timed out after ${socketTimeout}ms (reqId: ${reqId}, socketConnected: ${isSocketConnected}, wsConnected: ${isWsConnected}, in: ${bytesClientToTarget}B, out: ${bytesTargetToClient}B)`,
         );
-        cleanup();
+        executeHook("machine_service_timeout", req, service, {
+            phase: "idle",
+            socketConnected: isSocketConnected,
+            bytesTargetToClient,
+            bytesClientToTarget,
+        });
+        cleanup("socket_timeout");
     });
 
-    socket.on("error", cleanup);
-    socket.on("close", cleanup);
-    websocket.on("error", cleanup);
-    websocket.on("close", cleanup);
+    socket.on("data", (chunk: Buffer) => {
+        if (bytesTargetToClient === 0) {
+            logger.info(
+                "ConnectToRelay",
+                `[${workerLabel}] Received first bytes from target ${service.name} (${chunk.length}B, reqId: ${reqId})`,
+            );
+        }
+        bytesTargetToClient += chunk.length;
+    });
+
+    duplex.on("data", (chunk: Buffer) => {
+        if (bytesClientToTarget === 0) {
+            logger.info(
+                "ConnectToRelay",
+                `[${workerLabel}] Received first bytes from client for ${service.name} (${chunk.length}B, reqId: ${reqId})`,
+            );
+        }
+        bytesClientToTarget += chunk.length;
+    });
+
+    socket.on("error", (err) => {
+        logger.warn(
+            "ConnectToRelay",
+            `[${workerLabel}] Target socket error for ${service.name} (${service.internalHost}:${service.internalPort}): ${err.message} (reqId: ${reqId})`,
+        );
+        cleanup("socket_error: " + err.message);
+    });
+    socket.on("close", (hadError) => {
+        cleanup(hadError ? "socket_close_with_error" : "socket_close");
+    });
+
+    websocket.on("error", (err) => {
+        logger.warn(
+            "ConnectToRelay",
+            `[${workerLabel}] Relay WebSocket error for ${service.name}: ${err.message} (reqId: ${reqId})`,
+        );
+        cleanup("websocket_error: " + err.message);
+    });
+    websocket.on("close", (code, reason) => {
+        cleanup(`websocket_close:${code}:${reason}`);
+    });
 
     pipeline(duplex, socket, () => {
-        cleanup();
+        cleanup("duplex_to_socket_ended");
     });
     pipeline(socket, duplex, () => {
-        cleanup();
+        cleanup("socket_to_duplex_ended");
     });
 }

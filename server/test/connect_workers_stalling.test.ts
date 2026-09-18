@@ -69,6 +69,7 @@ test("Connect-to-Relay least-busy routing bypasses stalled worker with WORKERS=2
     // 4. Start Connected-to-Relay machine process with --workers 2
     const childEnv = { ...process.env };
     delete childEnv.QUIET;
+    childEnv.DATA_DIR = path.resolve(`./test-data-dir-${PORT}`);
 
     const routedWorkers: number[] = [];
     const connectedProcess = spawn(

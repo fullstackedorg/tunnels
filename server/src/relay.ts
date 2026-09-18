@@ -22,12 +22,10 @@ export async function startRelay() {
 
     cluster.on(
         "message",
-        (worker, message: WardenMessageIPC, socket: net.Socket) => {
-            if (
-                message &&
-                typeof message === "object" &&
-                message.targetWorkerId
-            ) {
+        (worker, message: any, socket: net.Socket) => {
+            if (!message || typeof message !== "object") return;
+
+            if (message.targetWorkerId) {
                 const targetWorker =
                     cluster.workers?.[message.targetWorkerId] ||
                     workers?.find((w) => w.id === message.targetWorkerId);
@@ -53,7 +51,7 @@ export async function startRelay() {
 
 export async function stopRelay() {
     stopWarden();
-    await stopServerHTTP();
+    stopServerHTTP();
     workers?.forEach((w) => w.kill());
     workers = null;
 }

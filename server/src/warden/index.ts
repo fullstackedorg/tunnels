@@ -43,10 +43,6 @@ function getWorkerId(): number {
     return cluster.worker?.id ?? 0;
 }
 
-function sendToParent(message: WardenMessageIPC, socket?: net.Socket) {
-    process.send?.(message, socket);
-}
-
 export type WardenMessageIPC =
     | ({
           type: "relayed_service_request";
@@ -71,9 +67,10 @@ if (cluster.isWorker) {
             );
 
             if (message.type === "relayed_service_request") {
-                const { token, service } = message as RelayedServiceRequest & {
-                    type: string;
-                };
+                const { token, service, reqId, headers, url } =
+                    message as RelayedServiceRequest & {
+                        type: string;
+                    };
                 if (service?.machineId) {
                     const lifeline = machineLifelines.get(service.machineId);
                     logger.info(
@@ -84,6 +81,9 @@ if (cluster.isWorker) {
                         const reqMsg: RelayedServiceRequest = {
                             token,
                             service,
+                            reqId,
+                            headers,
+                            url,
                         };
                         lifeline.send(JSON.stringify(reqMsg));
                     }
@@ -102,12 +102,14 @@ if (cluster.isWorker) {
                     const mockReq = Object.assign(
                         new http.IncomingMessage(socket),
                         {
+                            id: token || crypto.randomUUID(),
                             headers: message.headers || {},
                             url: message.url || "",
                             method: "GET",
                             httpVersion: "1.1",
                             httpVersionMajor: 1,
                             httpVersionMinor: 1,
+                            deny: () => socket.destroy(),
                         },
                     ) as IncomingMessageWithDeny;
                     const ws = await upgradeRequest(mockReq);
@@ -143,8 +145,11 @@ export async function wardenRequest(req: IncomingMessageWithDeny) {
 
     const originWorkerId = await KV.get<number>(`relayed_request:${token}`);
     if (originWorkerId !== null && originWorkerId !== getWorkerId()) {
-        req.socket.pause();
-        sendToParent(
+        logger.info(
+            "Warden Worker",
+            `Forwarding relayed_service_socket token=${token} to originWorkerId=${originWorkerId}`,
+        );
+        process.send?.(
             {
                 type: "relayed_service_socket",
                 targetWorkerId: originWorkerId,
@@ -157,6 +162,7 @@ export async function wardenRequest(req: IncomingMessageWithDeny) {
         return;
     }
 
+    logger.warn("Warden", `Denied token ${token} in wardenRequest`);
     req.deny();
 }
 
@@ -269,10 +275,14 @@ const relayedServiceRequests = new Map<string, (ws: stream.Duplex) => void>();
 export type RelayedServiceRequest = {
     token: string;
     service: Service;
+    reqId?: string;
+    headers?: http.IncomingHttpHeaders;
+    url?: string;
 };
 
 export async function getRelayedService(
     service: Service,
+    req?: IncomingMessageWithDeny,
 ): Promise<stream.Duplex> {
     if (!service.machineId) {
         throw new Error("Service is not relayed");
@@ -296,11 +306,44 @@ export async function getRelayedService(
     const token = generateToken();
     await KV.set(`relayed_request:${token}`, workerId);
 
-    return new Promise<stream.Duplex>((resolve) => {
-        relayedServiceRequests.set(token, resolve);
+    const relayTimeoutMs =
+        getEnvOrArgCLI(
+            ["RELAYED_SERVICE_TIMEOUT", "relayed-service-timeout"],
+            "number",
+        ) ?? 30000;
+
+    return new Promise<stream.Duplex>((resolve, reject) => {
+        let timer: NodeJS.Timeout | null = null;
+        const wrappedResolve = (duplex: stream.Duplex) => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            resolve(duplex);
+        };
+
+        timer = setTimeout(() => {
+            relayedServiceRequests.delete(token);
+            KV.del(`relayed_request:${token}`);
+            logger.warn(
+                "Warden",
+                `Relayed service request timed out after ${relayTimeoutMs}ms waiting for machine connection (service: ${service.name}, token: ${token})`,
+            );
+            reject(
+                new Error(
+                    `Timed out waiting for relayed service connection (${service.name})`,
+                ),
+            );
+        }, relayTimeoutMs);
+        timer.unref();
+
+        relayedServiceRequests.set(token, wrappedResolve);
         const message: RelayedServiceRequest = {
             token,
             service,
+            reqId: req?.id || crypto.randomUUID(),
+            headers: req?.headers,
+            url: req?.url,
         };
 
         if (targetWorkerId === workerId) {
@@ -309,7 +352,7 @@ export async function getRelayedService(
                 lifeline.send(JSON.stringify(message));
             }
         } else {
-            sendToParent({
+            process.send?.({
                 type: "relayed_service_request",
                 targetWorkerId,
                 token,

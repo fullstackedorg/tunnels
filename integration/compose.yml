@@ -7,6 +7,7 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${PASSWORD}
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
 
   postgresql:
     image: postgres:latest

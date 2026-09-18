@@ -1,4 +1,5 @@
 import { getEnvOrArgCLI } from "./args.ts";
+import { executeHook } from "./hooks.ts";
 
 export interface Breadcrumb {
     timestamp: string;
@@ -18,16 +19,18 @@ export class Logger {
         message: string,
         metadata?: Record<string, any>,
     ): void {
-        this.breadcrumbs.push({
+        const entry: Breadcrumb = {
             timestamp: new Date().toISOString(),
             category,
             level,
             message,
             metadata,
-        });
+        };
+        this.breadcrumbs.push(entry);
         if (this.breadcrumbs.length > this.maxBreadcrumbs) {
             this.breadcrumbs.shift();
         }
+        executeHook("log", null, entry);
     }
 
     public get isQuiet(): boolean {
@@ -71,6 +74,18 @@ export class Logger {
         ...args: any[]
     ): void {
         const isQuiet = this.isQuiet;
+
+        const errorEntry: Breadcrumb = {
+            timestamp: new Date().toISOString(),
+            category: category || "Error",
+            level: "error",
+            message:
+                typeof message === "string"
+                    ? message
+                    : message?.message || String(message),
+            metadata: args.length > 0 ? { args } : undefined,
+        };
+        executeHook("log", null, errorEntry);
 
         // Filter breadcrumbs by category (or dump all if category is null/falsy)
         const relevant = category
