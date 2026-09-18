@@ -355,8 +355,7 @@ export async function getRelayedService(
             process.send?.({
                 type: "relayed_service_request",
                 targetWorkerId,
-                token,
-                service,
+                ...message,
             });
         }
     });

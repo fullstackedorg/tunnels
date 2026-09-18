@@ -275,25 +275,32 @@ function notifyRequestCompleted(reqId: string | null) {
     }
 }
 
-async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
+export async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
     if (workers) {
         const rawData = input.toString();
         let parsedReqId: string | undefined;
+        let parsedService: any;
         try {
             const parsed = JSON.parse(rawData);
             if (parsed && parsed.reqId) parsedReqId = parsed.reqId;
+            if (parsed && parsed.service) parsedService = parsed.service;
         } catch {}
-        const reqId = parsedReqId || crypto.randomUUID();
+
+        if (!parsedReqId) {
+            logger.error(
+                "ConnectToRelay",
+                `Received relayed request from relay with no reqId, canceling execution: ${rawData.slice(0, 200)}`,
+            );
+            return;
+        }
+
+        const reqId = parsedReqId;
         const workerIndex = getLeastBusyWorkerIndex();
         workerActiveRequests[workerIndex]++;
         workers[workerIndex].send({ reqId, data: rawData });
-        let serviceInfo = "";
-        try {
-            const parsed = JSON.parse(rawData);
-            if (parsed && parsed.service) {
-                serviceInfo = ` for service "${parsed.service.name || parsed.service.id}" (${parsed.service.internalHost}:${parsed.service.internalPort})`;
-            }
-        } catch {}
+        const serviceInfo = parsedService
+            ? ` for service "${parsedService.name || parsedService.id}" (${parsedService.internalHost}:${parsedService.internalPort})`
+            : "";
         logger.info(
             "ConnectToRelay",
             `Forwarding message ${reqId} to worker ${workerIndex} (active: ${workerActiveRequests[workerIndex]})${serviceInfo}`,
@@ -301,7 +308,7 @@ async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
         return;
     }
 
-    let reqId: string = "unknown";
+    let reqId: string | null = null;
     let rawJson: string;
 
     if (
@@ -331,6 +338,24 @@ async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
 
     if (message.reqId) {
         reqId = message.reqId;
+    }
+
+    if (!reqId) {
+        logger.error(
+            "ConnectToRelay",
+            `Relayed request message has no reqId, canceling execution: ${rawJson.slice(0, 200)}`,
+        );
+        notifyRequestCompleted(reqId);
+        return;
+    }
+
+    if (!message.service || !message.token) {
+        logger.error(
+            "ConnectToRelay",
+            `Relayed request message missing service or token, canceling execution (reqId: ${reqId})`,
+        );
+        notifyRequestCompleted(reqId);
+        return;
     }
 
     if (!relayUrl) {

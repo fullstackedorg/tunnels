@@ -5,6 +5,7 @@ import * as ws from "ws";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { registerHook } from "../src/utils/hooks.ts";
+import { onMessage } from "../src/connect.ts";
 import { setupTestServer } from "./helpers.ts";
 
 const PORT = 3460;
@@ -164,3 +165,44 @@ test("Relay e2e round-trip - relay process & connected-to-relay machine process"
         "Local TCP echo server should have received the data",
     );
 });
+
+test("Connected-to-Relay onMessage cancels execution if reqId is missing", async (t) => {
+    let capturedError = "";
+    const unregisterLog = registerHook("log", (_, entry) => {
+        if (entry.level === "error" && entry.message?.includes("reqId")) {
+            capturedError = entry.message;
+        }
+    });
+    t.after(() => {
+        unregisterLog();
+    });
+
+    let hookCalled = false;
+    const unregisterHook = registerHook("machine_service_request", () => {
+        hookCalled = true;
+    });
+    t.after(() => {
+        unregisterHook();
+    });
+
+    // Message without reqId
+    const messageNoReqId = JSON.stringify({
+        token: "test-token",
+        service: {
+            id: "s1",
+            name: "service-1",
+            internalHost: "127.0.0.1",
+            internalPort: 9999,
+        },
+    });
+
+    await onMessage(messageNoReqId);
+
+    assert.strictEqual(
+        hookCalled,
+        false,
+        "machine_service_request should not be called when reqId is missing",
+    );
+    assert.match(capturedError, /has no reqId, canceling execution/);
+});
+
