@@ -4,8 +4,9 @@ import net from "node:net";
 import * as ws from "ws";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import cluster from "node:cluster";
 import { registerHook } from "../src/utils/hooks.ts";
-import { onMessage } from "../src/connect.ts";
+import { onMessage, notifyRequestCompleted } from "../src/connect.ts";
 import { setupTestServer } from "./helpers.ts";
 
 const PORT = 3460;
@@ -205,4 +206,86 @@ test("Connected-to-Relay onMessage cancels execution if reqId is missing", async
     );
     assert.match(capturedError, /has no reqId, canceling execution/);
 });
+
+test("notifyRequestCompleted logs unexpected issues on IPC errors or missing reqId", (t) => {
+    const logs: { level: string; message: string }[] = [];
+    const unregisterLog = registerHook("log", (_, entry) => {
+        if (entry.message?.includes("notifyRequestCompleted")) {
+            logs.push({ level: entry.level, message: entry.message });
+        }
+    });
+    t.after(() => {
+        unregisterLog();
+    });
+
+    const origIsWorker = cluster.isWorker;
+    const origSend = process.send;
+    const origConnected = (process as any).connected;
+    const restore = () => {
+        (cluster as any).isWorker = origIsWorker;
+        if (origSend === undefined) {
+            delete (process as any).send;
+        } else {
+            process.send = origSend;
+        }
+        if (origConnected === undefined) {
+            delete (process as any).connected;
+        } else {
+            (process as any).connected = origConnected;
+        }
+    };
+
+    try {
+        // Mock worker mode
+        (cluster as any).isWorker = true;
+
+        // 1. Missing reqId in worker process
+        notifyRequestCompleted(null);
+        assert.ok(
+            logs.some((l) => l.level === "error" && l.message.includes("without reqId")),
+            "Should log error when reqId is missing in worker process",
+        );
+
+        // 2. Missing process.send in worker process
+        delete (process as any).send;
+        notifyRequestCompleted("test-req-no-send");
+        assert.ok(
+            logs.some((l) => l.level === "error" && l.message.includes("process.send is not available")),
+            "Should log error when process.send is missing in worker process",
+        );
+
+        // 3. IPC disconnected
+        (process as any).send = () => true;
+        (process as any).connected = false;
+        notifyRequestCompleted("test-req-disc");
+        assert.ok(
+            logs.some((l) => l.level === "warn" && l.message.includes("IPC channel disconnected")),
+            "Should log warn when IPC channel is disconnected",
+        );
+
+        // 4. process.send throws exception
+        (process as any).connected = true;
+        (process as any).send = () => {
+            throw new Error("channel broken");
+        };
+        notifyRequestCompleted("test-req-err");
+        assert.ok(
+            logs.some((l) => l.level === "warn" && l.message.includes("exception sending IPC message")),
+            "Should log warn when process.send throws",
+        );
+
+        // 5. In single-process mode (isWorker = false), should silently return without logging
+        logs.length = 0;
+        (cluster as any).isWorker = false;
+        notifyRequestCompleted("test-single-process");
+        assert.strictEqual(
+            logs.length,
+            0,
+            "Should silently return in single-process mode without logging",
+        );
+    } finally {
+        restore();
+    }
+});
+
 

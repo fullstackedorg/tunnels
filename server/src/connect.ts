@@ -225,7 +225,7 @@ export async function connectToRelay() {
 
     if (cluster.isWorker) {
         process.on("disconnect", () => process.exit(0));
-        process.on("error", () => {});
+        process.on("error", () => { });
         process.on("message", onMessage);
         return;
     }
@@ -266,46 +266,95 @@ export async function connectToRelay() {
     }
 }
 
-function notifyRequestCompleted(reqId: string | null) {
-    if (!reqId || !process.send || !process.connected) return;
-    try {
-        process.send({ reqId, type: "request_completed" }, () => {});
-    } catch {
-        // Parent IPC channel may be disconnected or closed
+export function notifyRequestCompleted(reqId: string | null) {
+    if (!cluster.isWorker) {
+        return;
     }
+
+    if (!reqId) {
+        logger.error(
+            "ConnectToRelay",
+            "notifyRequestCompleted called without reqId in worker process; master cannot decrement active request count",
+        );
+        return;
+    }
+
+    if (!process.send) {
+        logger.error(
+            "ConnectToRelay",
+            `notifyRequestCompleted: process.send is not available for request ${reqId} in worker process`,
+        );
+        return;
+    }
+
+    if (!process.connected) {
+        logger.warn(
+            "ConnectToRelay",
+            `notifyRequestCompleted: IPC channel disconnected for request ${reqId}`,
+        );
+        return;
+    }
+
+    try {
+        process.send({ reqId, type: "request_completed" }, (err: any) => {
+            if (err) {
+                logger.warn(
+                    "ConnectToRelay",
+                    `notifyRequestCompleted: failed to send IPC message for request ${reqId}: ${err.message || err}`,
+                );
+            }
+        });
+    } catch (err: any) {
+        logger.warn(
+            "ConnectToRelay",
+            `notifyRequestCompleted: exception sending IPC message for request ${reqId}: ${err?.message || err}`,
+        );
+    }
+}
+
+function onMessageWorker(input: ws.RawData | ConnectIPCMessage | string) {
+    if (!workers) {
+        logger.error(
+            "ConnectToRelay",
+            `called onMessageWorker without workers`,
+        );
+
+        return;
+    }
+
+    const rawData = input.toString();
+    let parsedReqId: string | undefined;
+    let parsedService: any;
+    try {
+        const parsed = JSON.parse(rawData);
+        if (parsed && parsed.reqId) parsedReqId = parsed.reqId;
+        if (parsed && parsed.service) parsedService = parsed.service;
+    } catch { }
+
+    if (!parsedReqId) {
+        logger.error(
+            "ConnectToRelay",
+            `Received relayed request from relay with no reqId, canceling execution: ${rawData.slice(0, 200)}`,
+        );
+        return;
+    }
+
+    const reqId = parsedReqId;
+    const workerIndex = getLeastBusyWorkerIndex();
+    workerActiveRequests[workerIndex]++;
+    workers[workerIndex].send({ reqId, data: rawData });
+    const serviceInfo = parsedService
+        ? ` for service "${parsedService.name || parsedService.id}" (${parsedService.internalHost}:${parsedService.internalPort})`
+        : "";
+    logger.info(
+        "ConnectToRelay",
+        `Forwarding message ${reqId} to worker ${workerIndex} (active: ${workerActiveRequests[workerIndex]})${serviceInfo}`,
+    );
 }
 
 export async function onMessage(input: ws.RawData | ConnectIPCMessage | string) {
     if (workers) {
-        const rawData = input.toString();
-        let parsedReqId: string | undefined;
-        let parsedService: any;
-        try {
-            const parsed = JSON.parse(rawData);
-            if (parsed && parsed.reqId) parsedReqId = parsed.reqId;
-            if (parsed && parsed.service) parsedService = parsed.service;
-        } catch {}
-
-        if (!parsedReqId) {
-            logger.error(
-                "ConnectToRelay",
-                `Received relayed request from relay with no reqId, canceling execution: ${rawData.slice(0, 200)}`,
-            );
-            return;
-        }
-
-        const reqId = parsedReqId;
-        const workerIndex = getLeastBusyWorkerIndex();
-        workerActiveRequests[workerIndex]++;
-        workers[workerIndex].send({ reqId, data: rawData });
-        const serviceInfo = parsedService
-            ? ` for service "${parsedService.name || parsedService.id}" (${parsedService.internalHost}:${parsedService.internalPort})`
-            : "";
-        logger.info(
-            "ConnectToRelay",
-            `Forwarding message ${reqId} to worker ${workerIndex} (active: ${workerActiveRequests[workerIndex]})${serviceInfo}`,
-        );
-        return;
+        return onMessageWorker(input);
     }
 
     let reqId: string | null = null;
