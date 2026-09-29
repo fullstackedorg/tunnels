@@ -1,12 +1,2 @@
-node_modules
-out
-dist
-user_data
-machines.json
-services.json
-proxies.json
-server/openapi.json
+.DS_Store
 .env
-client/stats
-.tmp
-server/data
