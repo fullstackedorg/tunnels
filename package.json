@@ -1,9 +1,0 @@
-{
-    "workspaces": [
-        "server",
-        "integration"
-    ],
-    "allowScripts": {
-        "esbuild": true
-    }
-}
