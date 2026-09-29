@@ -73,7 +73,7 @@ The first argument to every hook callback is consistently the caller/context obj
 | `tunnel_request` | Gating | Worker | `(req, tunnel)` | Runtime socket with a valid tunnel token, before Edge checks and upgrade. |
 | `tunnel_start` | Telemetry | Worker | `(req, tunnel)` | Upgrade accepted. Exactly one `tunnel_end` follows. |
 | `tunnel_connected` | Connected | Worker | `(req, tunnel, remoteSocket, targetSocket)` | Both streams established, before they resume. `remoteSocket` is the runtime duplex; `targetSocket` is the target socket (direct) or relayed duplex. |
-| `tunnel_end` | Telemetry | Worker | `(req, tunnel, reason)` | Session ended. `reason` is from the [taxonomy](../1-concepts/protocol-spec.md#close-reason-taxonomy). |
+| `tunnel_end` | Telemetry | Worker | `(req, tunnel, reason, error?)` | Session ended. `reason` is from the [taxonomy](../1-concepts/protocol-spec.md#close-reason-taxonomy). Optional `error` holds the underlying `Error` (if the session ended abnormally). |
 | `lifeline_connect` | Gating | Worker | `(req, edge)` | Lifeline with a valid edge token, before upgrade. |
 | `lifeline_disconnect` | Telemetry | Lifeline worker | `(null, edge, reason)` | Lifeline closed (`heartbeat_timeout`, `superseded`, `token_rolled`, `edge_deleted`, `hub_shutdown`, `client_close`). |
 | `log` | Telemetry | Primary and workers | `(null, entry)` | Every emitted log entry. See [Logger](../3-subsystems/logger.md). |
@@ -86,7 +86,7 @@ The first argument to every hook callback is consistently the caller/context obj
 | `edge_tunnel_start` | Telemetry | Edge worker | `(context, tunnel)` | Order accepted and dialing begun. Exactly one `edge_tunnel_end` follows. |
 | `edge_tunnel_connected` | Connected | Edge worker | `(context, tunnel, remoteSocket, targetSocket)` | Relayed socket and target socket both open, before they resume. |
 | `edge_tunnel_timeout` | Telemetry | Edge worker | `(context, tunnel)` | The order's `connectTimeoutMs` expired before the target connected. |
-| `edge_tunnel_end` | Telemetry | Edge worker | `(context, tunnel, reason)` | Session ended or order failed after start. Fires exactly once per session that passed `edge_tunnel_request` (pairing with `edge_tunnel_start`). Does not fire for orders denied during gating. |
+| `edge_tunnel_end` | Telemetry | Edge worker | `(context, tunnel, reason, error?)` | Session ended or order failed after start. Fires exactly once per session that passed `edge_tunnel_request` (pairing with `edge_tunnel_start`). Optional `error` holds the caught dial or stream `Error`. Does not fire for orders denied during gating. |
 
 "Edge worker" means the single process when the Edge runs with `WORKERS = 1`.
 
@@ -131,14 +131,29 @@ export type ScopeOperation = "list" | "read" | "update" | "delete" | "roll_token
 ```typescript
 import { registerHook } from "../server/src/utils/hooks.ts";
 
-const unsubscribe = registerHook("tunnel_end", (req, tunnel, reason) => {
-  process.stdout.write(`${tunnel.name} closed: ${reason}\n`);
+const unsubscribe = registerHook("tunnel_end", (req, tunnel, reason, error) => {
+  if (error) {
+    process.stderr.write(`${tunnel.name} failed: ${reason} (${error.message})\n`);
+  } else {
+    process.stdout.write(`${tunnel.name} closed cleanly: ${reason}\n`);
+  }
 });
 
 unsubscribe(); // removes the handler
 ```
 
 `registerHook` throws on an unknown hook name, so typos fail at startup instead of silently never running.
+
+## Programmatic Session Control
+
+Plugins and event listeners can terminate active sessions programmatically across the cluster:
+
+```typescript
+import { severSessions } from "../server/src/handlers/tunnel.ts";
+
+// Immediately terminate all sessions for a specific tunnel
+const count = await severSessions({ tunnelId: "target-tunnel-id" }, "token_rolled");
+```
 
 ## Loading Plugins
 

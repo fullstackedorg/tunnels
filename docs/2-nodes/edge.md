@@ -90,13 +90,13 @@ For each `connect_tunnel` order:
 3. **Target failure or deadline**: destroy the other dial. Before handoff, send `connect_tunnel_failed` with `target_unreachable` or `connect_timeout`. After handoff (the relayed socket was already accepted), close the relayed socket with `1014` and the same reason. `edge_tunnel_timeout` fires when the deadline was the cause.
 4. **Relayed dial failure**: destroy the target socket and send `connect_tunnel_failed` with `relay_dial_failed`.
 5. **Splice**: once both are open, attach two pipelines with backpressure, await `edge_tunnel_connected(context, tunnel, remoteSocket, targetSocket)` (bounded by `HOOK_TIMEOUT`), then resume both streams. Because the hook runs before `resume()`, byte-counting listeners see every byte.
-6. **Teardown**: when either side ends or errors, close both (no half-close) and emit `edge_tunnel_end(context, tunnel, reason)` exactly once.
+6. **Teardown**: when either side ends or errors, close both (no half-close) and emit `edge_tunnel_end(context, tunnel, reason, error?)` exactly once.
 
 ```typescript
 import { pipeline } from "node:stream";
 
 let closed = false;
-function teardown(reason: Reason) {
+function teardown(reason: Reason, error?: Error) {
   if (closed) return;
   closed = true;
   const code = CLOSE_CODES[reason]; // mapping from the Protocol Spec close-code table
@@ -105,24 +105,24 @@ function teardown(reason: Reason) {
     relayedWs.close(code, reason);
     // Event-driven flush: wait for close event or destination finish with a 500ms safety timer
     const cleanup = () => {
-      relayedDuplex.destroy();
-      targetSocket.destroy();
+      relayedDuplex.destroy(error);
+      targetSocket.destroy(error);
     };
     const timer = setTimeout(cleanup, 500);
     relayedWs.once("close", () => { clearTimeout(timer); cleanup(); });
   } else {
     // Hard error or already closed: clean up immediately
-    relayedDuplex.destroy();
-    targetSocket.destroy();
+    relayedDuplex.destroy(error);
+    targetSocket.destroy(error);
   }
   
-  dispatchTelemetry("edge_tunnel_end", context, tunnel, reason); // not awaited
+  dispatchTelemetry("edge_tunnel_end", context, tunnel, reason, error); // not awaited, includes Error if present
 }
 
 // Callback-form pipeline: (source, destination, callback). Each pipeline ends its destination on EOF,
 // and teardown() then closes the other direction (no half-close).
-pipeline(relayedDuplex, targetSocket, (err) => teardown(err ? "stream_error" : "client_close"));
-pipeline(targetSocket, relayedDuplex, (err) => teardown(err ? "stream_error" : "target_close"));
+pipeline(relayedDuplex, targetSocket, (err) => teardown(err ? "stream_error" : "client_close", err ?? undefined));
+pipeline(targetSocket, relayedDuplex, (err) => teardown(err ? "stream_error" : "target_close", err ?? undefined));
 
 await runAwaitedHook("edge_tunnel_connected", context, tunnel, relayedDuplex, targetSocket); // bounded by HOOK_TIMEOUT, fail-open
 

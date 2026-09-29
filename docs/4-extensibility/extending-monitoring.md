@@ -84,7 +84,7 @@ registerHook("tunnel_connected", (req, _tunnel, remoteSocket, targetSocket) => {
   targetSocket.on("data", (c: Buffer) => { s.bytesOut += c.length; });
 });
 
-registerHook("tunnel_end", (req, tunnel, reason) => {
+registerHook("tunnel_end", (req, tunnel, reason, error) => {
   const s = sessions.get(req.id)!;
   sessions.delete(req.id);
   process.stdout.write(JSON.stringify({
@@ -98,6 +98,7 @@ registerHook("tunnel_end", (req, tunnel, reason) => {
     bytesIn: s.bytesIn,
     bytesOut: s.bytesOut,
     reason,
+    error: error ? { message: error.message, stack: error.stack } : undefined,
   }) + "\n");
 });
 ```
@@ -110,12 +111,15 @@ import { registerHook } from "../server/src/utils/hooks.ts";
 const WEBHOOK = process.env.ALERT_WEBHOOK_URL;
 const NORMAL = new Set(["client_close", "target_close", "client_aborted", "hub_shutdown"]);
 
-registerHook("tunnel_end", (_req, tunnel, reason) => {
+registerHook("tunnel_end", (_req, tunnel, reason, error) => {
   if (!WEBHOOK || NORMAL.has(reason)) return;
   fetch(WEBHOOK, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: `Tunnel ${tunnel.name} ended abnormally: ${reason}` }),
+    body: JSON.stringify({
+      text: `Tunnel ${tunnel.name} ended abnormally: ${reason}`,
+      error: error ? { message: error.message, stack: error.stack } : undefined
+    }),
     signal: AbortSignal.timeout(5000),
   }).catch(() => {});
 });

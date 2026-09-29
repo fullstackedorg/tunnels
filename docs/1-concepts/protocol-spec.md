@@ -265,7 +265,7 @@ Protocols that work: PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1 (includ
 
 ## Close Reason Taxonomy
 
-Only these strings are ever sent in close frames or passed to `tunnel_end`, `edge_tunnel_end`, and `lifeline_disconnect`. There are no dynamic messages (details go to logs), so every reason fits the 123-byte limit of RFC 6455 §5.5 without truncation.
+Only these strings are ever sent in close frames or reported as the primary taxonomy reason in `tunnel_end`, `edge_tunnel_end`, and `lifeline_disconnect`. There are no dynamic messages across the wire (details go to logs), so every reason fits the 123-byte limit of RFC 6455 §5.5 without truncation. For internal telemetry hooks (`tunnel_end` and `edge_tunnel_end`), the underlying Node.js `Error` instance (if any) is passed as an optional fourth parameter (`error?: Error`) for logging and diagnostic inspection.
 
 | Reason | Applies to | Meaning |
 | :--- | :--- | :--- |

@@ -182,6 +182,14 @@ registerHook("create_tunnel", (req, payload) => assertEdgeOwnership(req, payload
 registerHook("update_tunnel", (req, _item, updates) => {
   if ("edgeId" in updates) return assertEdgeOwnership(req, updates.edgeId);
 });
+
+// 6. Programmatically sever active sessions when an external revocation event occurs:
+import { severSessions } from "../server/src/handlers/tunnel.ts";
+
+export async function onExternalRevocation(tunnelId: string) {
+  const count = await severSessions({ tunnelId }, "token_rolled");
+  console.log(`Severed ${count} active session(s) for revoked tunnel ${tunnelId}`);
+}
 ```
 
 For large deployments on PostgreSQL, index the scoping key: `CREATE INDEX idx_tunnel_org ON tunnel ((metadata->>'orgId'));` (and the same for `edge`).

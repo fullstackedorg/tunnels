@@ -37,13 +37,13 @@ The Tunnel Handler owns the lifecycle of every session that starts from a runtim
    * **Relayed**: `warden.acquireRelayedStream(tunnel, req, deadline)` resolves with the relayed duplex at handoff, or rejects with a taxonomy reason (see [Relayed Failure Reason Sources](../1-concepts/protocol-spec.md#d-relayed-failure-reason-sources)).
    * If the runtime disconnects first, the session ends with `client_aborted`, a 5s ticket tombstone is written to KV, and the Warden sends `cancel_tunnel` for relayed tunnels.
 6. **Splice**: attach both pipelines, await `tunnel_connected(req, tunnel, remoteSocket, targetSocket)` bounded by `HOOK_TIMEOUT`, then resume both streams. Hooks therefore observe every byte.
-7. **Teardown**: the first side to end or fail determines the reason. The close code is resolved dynamically from `CLOSE_CODES[reason]` ([Protocol Spec](../1-concepts/protocol-spec.md#5-close-codes)). For relayed sessions, both clean completions (`target_close`) and error closures propagate the reason and close code received from the Edge verbatim.
+7. **Teardown**: the first side to end or fail determines the reason. The close code is resolved dynamically from `CLOSE_CODES[reason]` ([Protocol Spec](../1-concepts/protocol-spec.md#5-close-codes)). For relayed sessions, both clean completions (`target_close`) and error closures propagate the reason and close code received from the Edge verbatim. If the session ended due to an error, the underlying `Error` instance is forwarded to the `tunnel_end` telemetry hook for rich diagnostics.
 
 ```typescript
 import { pipeline } from "node:stream";
 
 let closed = false;
-function teardown(reason: Reason) {
+function teardown(reason: Reason, error?: Error) {
   if (closed) return;
   closed = true;
   const code = CLOSE_CODES[reason]; // from the Protocol Spec close-code table
@@ -52,23 +52,23 @@ function teardown(reason: Reason) {
     runtimeWs.close(code, reason);
     // Event-driven flush: wait for close event or stream finish with a 500ms safety timer
     const cleanup = () => {
-      runtimeDuplex.destroy();
-      targetStream.destroy();
+      runtimeDuplex.destroy(error);
+      targetStream.destroy(error);
     };
     const timer = setTimeout(cleanup, 500);
     runtimeWs.once("close", () => { clearTimeout(timer); cleanup(); });
   } else {
     // Hard error or already closed: clean up immediately
-    runtimeDuplex.destroy();
-    targetStream.destroy();
+    runtimeDuplex.destroy(error);
+    targetStream.destroy(error);
   }
   
   sessions.unregister(sessionId);
-  dispatchTelemetry("tunnel_end", req, tunnel, reason); // not awaited
+  dispatchTelemetry("tunnel_end", req, tunnel, reason, error); // not awaited, includes Error if present
 }
 
-pipeline(runtimeDuplex, targetStream, (err) => teardown(err ? "stream_error" : "client_close"));
-pipeline(targetStream, runtimeDuplex, (err) => teardown(err ? "stream_error" : "target_close"));
+pipeline(runtimeDuplex, targetStream, (err) => teardown(err ? "stream_error" : "client_close", err ?? undefined));
+pipeline(targetStream, runtimeDuplex, (err) => teardown(err ? "stream_error" : "target_close", err ?? undefined));
 
 await runAwaitedHook("tunnel_connected", req, tunnel, runtimeDuplex, targetStream); // bounded, fail-open
 
@@ -89,6 +89,35 @@ Each worker keeps an in-memory index of its active sessions by `tunnelId` and by
 | Edge deleted (tunnels cascade) | All sessions of its tunnels | `1000 edge_deleted` |
 
 The REST API applies the change in storage first, evicts caches, and then broadcasts `sever_sessions { tunnelId | edgeId, reason }`. In clustered mode the broadcast goes through the Primary to every worker. Changes to `name` or `metadata` do not close sessions.
+
+### Programmatic Session Severing API
+
+In addition to REST-triggered mutations, the Hub exports a programmatic API allowing plugins, background subscribers, or custom event handlers (such as external revocation webhooks or message queue listeners) to immediately terminate active sessions matching a filter:
+
+```typescript
+/**
+ * Programmatically severs active sessions across all workers matching the filter.
+ * In clustered mode, broadcasts sever_sessions through the Primary to all workers.
+ *
+ * @param filter An object containing tunnelId, edgeId, or both.
+ * @param reason The close taxonomy reason to report (default: "token_rolled").
+ * @returns Total number of sessions severed.
+ */
+export async function severSessions(
+  filter: { tunnelId?: string; edgeId?: string },
+  reason: Reason = "token_rolled"
+): Promise<number>;
+```
+
+Example usage in an external event subscriber or plugin:
+
+```typescript
+import { severSessions } from "../server/src/handlers/tunnel.ts";
+
+// Terminate all sessions for a specific tunnel immediately
+const count = await severSessions({ tunnelId: "tun-uuid-1234" }, "token_rolled");
+console.log(`Severed ${count} active session(s)`);
+```
 
 ## Hooks
 
