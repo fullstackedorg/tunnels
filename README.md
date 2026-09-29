@@ -137,4 +137,6 @@ A Hub reachable from the internet must sit behind a TLS-terminating reverse prox
 | **Extensibility** | [Hooks Catalog](docs/4-extensibility/hooks.md) | Every hook, execution model, plugin loading. |
 | | [Extending Security](docs/4-extensibility/extending-security.md) | Admin key, IP allowlist, signed requests, rate limits, tenancy, target restrictions. |
 | | [Extending Monitoring](docs/4-extensibility/extending-monitoring.md) | Prometheus metrics, access logs, alerts. |
+| **Development** | [Standards & Style](docs/5-development/standards.md) | Formatting (Prettier, 4 spaces), 300 LOC limit, file naming logic, Node 24+ type stripping. |
+| | [Workflow & Tooling](docs/5-development/workflow.md) | Direct Node 24+ execution, package scripts, test runner, quality gates. |
 | **Cookbook** | [Examples](examples/README.md) | PostgreSQL, Redis, MySQL, S3, HTTP, Edge, and plugin examples. |

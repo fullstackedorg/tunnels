@@ -88,4 +88,4 @@ If the KV store is unreachable:
 
 * Token resolution fails with `503` (never `401`), so Edges retry instead of entering their revoked state.
 * Ticket creation fails, and the runtime socket is closed with `1011 stream_error`.
-* Presence cannot be refreshed. After `HEARTBEAT_TIMEOUT` other workers consider affected Edges offline (`503 Edge Offline`) until writes succeed again; the lifelines themselves stay open.
+* Presence cannot be refreshed. After `HEARTBEAT_TIMEOUT` other workers consider affected Edges offline (closing new runtime sessions with `1014 edge_disconnected`) until writes succeed again; the lifelines themselves stay open.

@@ -32,8 +32,6 @@ All endpoints accept and return `application/json`. Error bodies are always `{"e
 
 | Status | When | Body |
 | :--- | :--- | :--- |
-| Status | When | Body |
-| :--- | :--- | :--- |
 | `200 OK` | Successful read, list, update, or token roll. | Entity or array |
 | `201 Created` | Successful create. | Entity including generated `id` and `token` |
 | `204 No Content` | Successful delete. | Empty |
