@@ -53,6 +53,9 @@ One TCP port (`PORT`, default 3000) serves both the REST API and all WebSocket u
     - `tun_`: runtime socket. The tunnel is resolved, `tunnel_request` runs, and the upgrade is accepted with `101`. If the target Edge is offline or saturated, it is immediately closed with `1014 edge_disconnected` or `1013 edge_saturated`.
     - missing or unknown prefix, or a token that does not resolve: `401 Unauthorized`. If resolution fails because storage or KV is unavailable: `503 Service Unavailable`.
 
+> [!NOTE]
+> Standard browser WebSockets cannot send custom request headers per the [WHATWG WebSocket API specification](https://websockets.spec.whatwg.org/), so handshakes lacking an `Authorization` header are rejected with `401 Unauthorized`. In browser workloads running on the **FullStacked runtime**, `window.WebSocket` is overridden by `WebSocketCore`. Registering a tunnel via `const tunnelName = await tunnel.register({ host, authorization, name? })` returns the generated string (or custom `name`); opening `new window.WebSocket("ws://" + tunnelName)` then routes through the tunnel using the registered `authorization` credentials.
+
 All rejection statuses and their meaning for clients are defined in [Rejection Statuses](../1-concepts/protocol-spec.md#rejection-statuses).
 
 ---

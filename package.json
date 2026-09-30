@@ -9,7 +9,8 @@
         "typecheck": "tsc --noEmit",
         "check:loc": "node scripts/check-loc.ts --max 300",
         "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
-        "test": "node --test test/*.test.ts"
+        "test": "TEST=1 node --test test/*.test.ts",
+        "test:integration": "docker compose -f docker-compose.test.yml up -d && TEST=1 node --test test/integration/*.test.ts"
     },
     "prettier": {
         "tabWidth": 4,
@@ -27,11 +28,17 @@
         "ws": "^8.18.0"
     },
     "devDependencies": {
+        "@aws-sdk/client-s3": "^3.1143.0",
+        "@aws-sdk/s3-request-presigner": "^3.1143.0",
+        "@types/mongodb": "^4.0.6",
         "@types/node": "^22.10.0",
         "@types/pg": "^8.11.10",
         "@types/ws": "^8.5.12",
         "drizzle-kit": "^0.30.0",
+        "mongodb": "^7.7.0",
+        "mysql2": "^3.24.5",
         "prettier": "^3.3.3",
+        "puppeteer": "^25.12.0",
         "typescript": "^5.6.3"
     }
 }

@@ -90,6 +90,18 @@ const client = new pg.Client({ host, port: 5432, user: "postgres" });
 await client.connect();
 ```
 
+> [!NOTE]
+> Standard browser WebSockets cannot pass custom handshake headers like `Authorization` per the [WHATWG WebSocket API specification](https://websockets.spec.whatwg.org/), meaning direct browser WebSockets connecting to Hub tunnel endpoints are rejected with `401 Unauthorized`.
+>
+> In the **FullStacked runtime**, `window.WebSocket` is overridden by FullStacked's `WebSocketCore`. Calling `tunnel.register` returns a generated string (or you can supply a custom `name`). When you create your WebSocket using that name:
+>
+> ```typescript
+> const tunnelName = await tunnel.register({ host, authorization });
+> const tunneledWS = new window.WebSocket("ws://" + tunnelName);
+> ```
+>
+> FullStacked's `WebSocketCore` will use tunnels with the registered `authorization` credentials.
+
 ---
 
 ## Reaching Private Networks with an Edge

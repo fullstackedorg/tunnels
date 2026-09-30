@@ -74,6 +74,21 @@ version: 0.1.0
 
 The token prefix determines how the connection is handled: `tun_` = runtime socket, `edg_` = lifeline, `tmp_` = relayed socket.
 
+> [!NOTE]
+> **Browser Compatibility**: The standard browser WebSocket API specification ([WHATWG WebSocket API](https://websockets.spec.whatwg.org/)) does not permit setting custom HTTP request headers (such as `Authorization`) during the WebSocket handshake. For this reason, standard browser WebSockets connecting directly to Hub tunnel endpoints cannot supply an `Authorization` header and are rejected with `401 Unauthorized`.
+>
+> In the **FullStacked runtime**, `window.WebSocket` is overridden by FullStacked's `WebSocketCore`. To connect through a tunnel, the application registers it using `tunnel.register({ host, authorization, name? })` from `fullstacked/tunnel`. Calling `tunnel.register` returns a generated string (or uses the supplied custom `name`). When you create your WebSocket with that tunnel name:
+>
+> ```typescript
+> const tunnelName = await tunnel.register({
+>     host: "tunnels.example.com:443",
+>     authorization: "tun_4f8a9e2d1c3b...",
+> });
+> const tunneledWS = new window.WebSocket("ws://" + tunnelName);
+> ```
+>
+> FullStacked's `WebSocketCore` will use tunnels with the registered `authorization` credentials.
+
 ### Rejection Statuses
 
 Before `101 Switching Protocols`, the Hub rejects with an HTTP status and a JSON body (`Content-Type: application/json`, body produced with `JSON.stringify`):

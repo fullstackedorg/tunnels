@@ -67,9 +67,10 @@ export async function startHub(config: AppConfig): Promise<HubInstance> {
 
     await new Promise<void>((resolve, reject) => {
         server.listen(config.port, config.host, () => {
+            const actualPort = (server.address() as any)?.port || config.port;
             logger.info(
                 "Hub",
-                `Hub listening on http://${config.host}:${config.port} (${identity})`
+                `Hub listening on http://${config.host}:${actualPort} (${identity})`
             );
             resolve();
         });

@@ -14,6 +14,11 @@ flowchart TD
 
 The WebSocket server has no listening port of its own. It completes upgrades handed over by the [HTTP Server](http-server.md), registers each connection in the heartbeat sweep, and exposes data connections (runtime sockets and relayed sockets) as Node.js `stream.Duplex` objects. Lifelines are used as message channels and are not wrapped in a duplex.
 
+> [!NOTE]
+> Standard browser WebSockets do not support custom request headers like `Authorization` under the [WHATWG WebSocket API specification](https://websockets.spec.whatwg.org/), so direct browser WebSockets cannot supply the `Authorization` header required by the Hub and are rejected with `401 Unauthorized`.
+>
+> Inside the **FullStacked runtime**, `window.WebSocket` is overridden by FullStacked's `WebSocketCore`. Calling `tunnel.register({ host, authorization, name? })` from `fullstacked/tunnel` returns the generated string (or custom `name`). When you create your WebSocket with that tunnel name (`new window.WebSocket("ws://" + tunnelName)`), FullStacked's `WebSocketCore` routes the connection through the registered tunnel with the specified `authorization` credentials.
+
 ## Configuration
 
 - `noServer: true`: upgrades come from the HTTP server.

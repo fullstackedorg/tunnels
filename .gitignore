@@ -4,3 +4,6 @@ node_modules/
 data/
 test-data-dir*
 drizzle/
+test/integration/tmp/
+test/integration/.tmp/
+*.ts.js
