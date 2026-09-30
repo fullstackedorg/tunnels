@@ -110,11 +110,11 @@ Consistency in file names allows intuitive codebase exploration and prevents cas
 ### Naming Conventions
 
 1. **Directories**: Lowercase kebab-case:
-    - `docs/1-concepts/`, `server/src/tunnel-handlers/`, `server/src/key-value-store/`.
+    - `docs/1-concepts/`, `src/tunnel-handlers/`, `src/key-value-store/`.
 2. **Source Files**: Lowercase kebab-case:
     - `filesystem-kv.ts`, `track-bandwidth.ts`, `socket-migration.ts`.
 3. **Well-Known Exceptions**:
-    - `main.ts`: Executable entry points (`server/src/main.ts`).
+    - `main.ts`: Executable entry points (`src/main.ts`).
     - `index.ts`: Barrel export files for a directory.
     - `drizzle.config.ts`: Configuration file for Drizzle Kit.
 4. **Interfaces & Types**:
@@ -126,7 +126,7 @@ Consistency in file names allows intuitive codebase exploration and prevents cas
 
 ## 4. Node 24+ Native TypeScript Execution Constraints
 
-The project runs TypeScript files directly with Node.js 24 LTS built-in type stripping (`node server/src/main.ts`) without transpilation or build steps during development.
+The project runs TypeScript files directly with Node.js 24 LTS built-in type stripping (`node src/main.ts`) without transpilation or build steps during development.
 
 Because Node 24 type stripping **erases types without generating JavaScript code**, any TypeScript syntax that produces runtime artifacts is strictly forbidden:
 

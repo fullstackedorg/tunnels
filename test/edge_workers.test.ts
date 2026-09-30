@@ -39,7 +39,7 @@ test("edge_workers: clustered edge with 2 workers streams data end-to-end", asyn
         edgeProc = spawn(
             process.execPath,
             [
-                "server/src/main.ts",
+                "src/main.ts",
                 "--edge",
                 "--hub-url",
                 `ws://127.0.0.1:${hubPort}`,

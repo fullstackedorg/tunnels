@@ -32,7 +32,7 @@ All settings are in the [Configuration Reference](configuration.md).
 ### Local Development
 
 ```bash
-node server/src/main.ts --port 3000
+node src/main.ts --port 3000
 ```
 
 Filesystem storage in `./data`, in-memory KV, plain `ws://localhost:3000`.
@@ -42,14 +42,14 @@ Filesystem storage in `./data`, in-memory KV, plain `ws://localhost:3000`.
 `WORKERS > 1` requires PostgreSQL and Redis; the Hub refuses to start otherwise (tests can use [`ALLOW_FILESYSTEM_MULTIWORKER`](configuration.md#test-mode-multi-worker-without-postgresql-or-redis) instead). Initialize the schema first (see [Schema Initialization](#schema-initialization)):
 
 ```bash
-npx drizzle-kit push --config server/drizzle.config.ts
+npx drizzle-kit push --config drizzle.config.ts
 
 PORT=3000 \
 WORKERS=4 \
 POSTGRES_URL="postgresql://postgres:secret@postgres:5432/tunnels" \
 REDIS_URL="redis://:secret@redis:6379" \
 TRUSTED_PROXIES="10.0.0.0/8" \
-node server/src/main.ts
+node src/main.ts
 ```
 
 Put a TLS-terminating reverse proxy in front (see [Deployment Requirement: TLS](configuration.md#deployment-requirement-tls)). Clustering is limited to one host.
@@ -122,9 +122,7 @@ PostgreSQL tables are managed manually with Drizzle Kit. Run one of these whenev
 
 ```bash
 # From the repository root
-npx drizzle-kit push --config server/drizzle.config.ts
-# Inside the Compose service (build context is ./server)
-docker compose run --rm hub npx drizzle-kit push --config drizzle.config.ts
+npx drizzle-kit push --config drizzle.config.ts
 ```
 
 On startup the Hub checks connectivity (`SELECT 1`) and that the `edge` and `tunnel` tables exist; if not, it exits with an error that names the command above.

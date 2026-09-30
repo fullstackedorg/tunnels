@@ -179,7 +179,7 @@ curl -X POST http://localhost:3000/tunnels \
 On the Raspberry Pi (no inbound ports needed):
 
 ```bash
-HUB_URL="wss://tunnels.example.com" TOKEN="edg_9a8b7c6d..." node server/src/main.ts
+HUB_URL="wss://tunnels.example.com" TOKEN="edg_9a8b7c6d..." node src/main.ts
 ```
 
 From any FullStacked runtime:
@@ -204,7 +204,7 @@ Allow runtime connections only from the local network. `req.clientIp` honors `TR
 
 ```typescript
 // plugins/local-only.ts, loaded with --plugin ./plugins/local-only.ts
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 registerHook("tunnel_request", (req) => {
     if (req.clientIp !== "127.0.0.1" && !req.clientIp.startsWith("192.168.")) req.deny(); // 403
@@ -218,7 +218,7 @@ More recipes: [Extending Security](../docs/4-extensibility/extending-security.md
 [`track-bandwidth-hook.ts`](track-bandwidth-hook.ts) registers its hooks when imported, so it works directly as a plugin on a Hub or an Edge:
 
 ```bash
-node server/src/main.ts --plugin ./examples/track-bandwidth-hook.ts
+node src/main.ts --plugin ./examples/track-bandwidth-hook.ts
 ```
 
 It uses `tunnel_connected` (Hub) and `edge_tunnel_connected` (Edge), which run before the streams resume, so every byte is counted. More recipes: [Extending Monitoring](../docs/4-extensibility/extending-monitoring.md).

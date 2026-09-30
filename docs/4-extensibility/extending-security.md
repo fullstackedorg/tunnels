@@ -33,7 +33,7 @@ Plugins import from the server source tree; adjust the relative paths to where y
 
 ```typescript
 import crypto from "node:crypto";
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 if (!ADMIN_TOKEN) throw new Error("ADMIN_TOKEN must be set"); // no fallback secret
@@ -58,7 +58,7 @@ Applied in `tunnel_request`, so it affects runtime sockets only, never lifelines
 
 ```typescript
 import net from "node:net";
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const allowed = new net.BlockList();
 allowed.addSubnet("10.0.0.0", 8);
@@ -77,7 +77,7 @@ Requires the runtime to prove it holds a shared secret in addition to the token,
 
 ```typescript
 import crypto from "node:crypto";
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const SECRET = process.env.TUNNEL_SIGNING_SECRET;
 if (!SECRET) throw new Error("TUNNEL_SIGNING_SECRET must be set");
@@ -104,7 +104,7 @@ This does not prevent replay within the skew window; for strict single use, also
 Applied in `tunnel_request` so Edge lifelines and relayed sockets are never throttled. Returns `429` with `Retry-After`.
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const WINDOW_SECONDS = 60;
 const MAX_PER_WINDOW = 60;
@@ -136,8 +136,8 @@ The counters are per process. With `WORKERS > 1` each worker enforces its own li
 Tenancy is stored in `metadata`. The scope hook restricts every read and mutation, so entities of other tenants are simply `404`.
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
-import { storage } from "../server/src/storage/index.ts";
+import { registerHook } from "../src/utils/hooks.ts";
+import { storage } from "../src/storage/index.ts";
 
 type User = { id: string; orgId: string; role: "admin" | "member" };
 
@@ -189,7 +189,7 @@ registerHook("update_tunnel", (req, _item, updates) => {
 });
 
 // 6. Programmatically sever active sessions when an external revocation event occurs:
-import { severSessions } from "../server/src/handlers/tunnel.ts";
+import { severSessions } from "../src/handlers/tunnel.ts";
 
 export async function onExternalRevocation(tunnelId: string) {
     const count = await severSessions({ tunnelId }, "token_rolled");
@@ -205,7 +205,7 @@ On the Hub, refuse direct tunnels to sensitive addresses:
 
 ```typescript
 import net from "node:net";
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const blocked = new net.BlockList();
 blocked.addSubnet("127.0.0.0", 8); // Hub's own loopback
@@ -227,7 +227,7 @@ Hostnames are resolved at dial time; to cover them too, also resolve and check i
 On an Edge, restrict which targets the Hub may ask for, so a compromised Hub cannot reach arbitrary hosts in the private network:
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const ALLOWED_TARGETS = new Set(["127.0.0.1:5432", "127.0.0.1:6379"]);
 

@@ -119,7 +119,7 @@ export async function severSessions(
 Example usage in an external event subscriber or plugin:
 
 ```typescript
-import { severSessions } from "../server/src/handlers/tunnel.ts";
+import { severSessions } from "../src/handlers/tunnel.ts";
 
 // Terminate all sessions for a specific tunnel immediately
 const count = await severSessions({ tunnelId: "tun-uuid-1234" }, "token_rolled");

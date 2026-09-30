@@ -55,7 +55,7 @@ Requires Node.js 24 LTS or newer.
 ### 1. Start a Hub
 
 ```bash
-node server/src/main.ts --port 3000
+node src/main.ts --port 3000
 ```
 
 Filesystem storage in `./data`, in-memory KV, plain `ws://localhost:3000`.
@@ -107,7 +107,7 @@ curl -X POST http://localhost:3000/tunnels \
   -d '{ "name": "home-postgres", "internalHost": "192.168.1.50", "internalPort": 5432, "edgeId": "a1c2e3d4-..." }'
 
 # 3. Start the Edge inside the private network (outbound connection only)
-HUB_URL="wss://tunnels.example.com" TOKEN="edg_a1c2e3d4..." node server/src/main.ts
+HUB_URL="wss://tunnels.example.com" TOKEN="edg_a1c2e3d4..." node src/main.ts
 ```
 
 A Hub reachable from the internet must sit behind a TLS-terminating reverse proxy; see [Deployment Requirement: TLS](docs/2-nodes/configuration.md#deployment-requirement-tls).

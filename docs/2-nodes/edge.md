@@ -32,10 +32,10 @@ The Edge is selected when `HUB_URL` is set. It runs inside a private network, ne
 
 ```bash
 # Single process
-node server/src/main.ts --hub-url wss://tunnels.example.com --token edg_a1c2e3d4...
+node src/main.ts --hub-url wss://tunnels.example.com --token edg_a1c2e3d4...
 
 # Multi-worker
-HUB_URL="wss://tunnels.example.com" TOKEN="edg_a1c2e3d4..." WORKERS=4 node server/src/main.ts
+HUB_URL="wss://tunnels.example.com" TOKEN="edg_a1c2e3d4..." WORKERS=4 node src/main.ts
 ```
 
 Run exactly one daemon per edge token. A second daemon with the same token replaces the first (`superseded`), and the two keep replacing each other.

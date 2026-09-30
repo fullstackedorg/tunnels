@@ -24,8 +24,8 @@ Plugin state is per process. With `WORKERS > 1`, a scrape of `/metrics` reaches 
 ## Recipe 1: Prometheus Metrics
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
-import { registerRoute } from "../server/src/api/index.ts";
+import { registerHook } from "../src/utils/hooks.ts";
+import { registerRoute } from "../src/api/index.ts";
 
 let active = 0;
 let completed = 0;
@@ -80,7 +80,7 @@ registerRoute(
 ## Recipe 2: Structured Access Log
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const sessions = new Map<string, { startedAt: number; bytesIn: number; bytesOut: number }>();
 
@@ -126,7 +126,7 @@ registerHook("tunnel_end", (req, tunnel, reason, error) => {
 ## Recipe 3: Webhook Alerts on Abnormal Endings
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const WEBHOOK = process.env.ALERT_WEBHOOK_URL;
 const NORMAL = new Set(["client_close", "target_close", "client_aborted", "hub_shutdown"]);

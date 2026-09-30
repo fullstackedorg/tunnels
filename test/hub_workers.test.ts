@@ -22,7 +22,7 @@ test("hub_workers: clustered hub launches with 2 workers and serves requests", a
     const hubProc = spawn(
         process.execPath,
         [
-            "server/src/main.ts",
+            "src/main.ts",
             "--port",
             String(hubPort),
             "--workers",

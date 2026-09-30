@@ -3,13 +3,13 @@
     "version": "0.1.0",
     "type": "module",
     "scripts": {
-        "start": "node server/src/main.ts",
+        "start": "node src/main.ts",
         "fmt": "prettier --write .",
         "fmt:check": "prettier --check .",
         "typecheck": "tsc --noEmit",
         "check:loc": "node scripts/check-loc.ts --max 300",
         "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
-        "test": "node --test server/test/*.test.ts"
+        "test": "node --test test/*.test.ts"
     },
     "prettier": {
         "tabWidth": 4,

@@ -130,7 +130,7 @@ export type ScopeOperation = "list" | "read" | "update" | "delete" | "roll_token
 ## Registering Hooks
 
 ```typescript
-import { registerHook } from "../server/src/utils/hooks.ts";
+import { registerHook } from "../src/utils/hooks.ts";
 
 const unsubscribe = registerHook("tunnel_end", (req, tunnel, reason, error) => {
     if (error) {
@@ -150,7 +150,7 @@ unsubscribe(); // removes the handler
 Plugins and event listeners can terminate active sessions programmatically across the cluster:
 
 ```typescript
-import { severSessions } from "../server/src/handlers/tunnel.ts";
+import { severSessions } from "../src/handlers/tunnel.ts";
 
 // Immediately terminate all sessions for a specific tunnel
 const count = await severSessions({ tunnelId: "target-tunnel-id" }, "token_rolled");
@@ -158,11 +158,11 @@ const count = await severSessions({ tunnelId: "target-tunnel-id" }, "token_rolle
 
 ## Loading Plugins
 
-A plugin is a module whose top-level code registers hooks or routes. Plugins import from the server's source tree (`server/src/...`); there is no separate package.
+A plugin is a module whose top-level code registers hooks or routes. Plugins import from the server's source tree (`src/...`); there is no separate package.
 
 ```bash
-node server/src/main.ts --plugin ./plugins/auth.ts,./plugins/metrics.ts
-PLUGINS="./plugins/auth.ts,./plugins/metrics.ts" node server/src/main.ts
+node src/main.ts --plugin ./plugins/auth.ts,./plugins/metrics.ts
+PLUGINS="./plugins/auth.ts,./plugins/metrics.ts" node src/main.ts
 ```
 
 Or embed the server in your own entry file:
@@ -171,7 +171,7 @@ Or embed the server in your own entry file:
 // server.ts
 import "./plugins/auth.ts";
 import "./plugins/metrics.ts";
-import { start } from "./tunnels/server/src/index.ts";
+import { start } from "./tunnels/src/index.ts";
 
 await start();
 ```

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const MAX_LOC = parseInt(process.argv[3] || "300", 10);
-const SRC_DIR = path.resolve(import.meta.dirname, "../server/src");
+const SRC_DIR = path.resolve(import.meta.dirname, "../src");
 
 function countLoc(filePath: string): number {
     const content = fs.readFileSync(filePath, "utf-8");
@@ -44,4 +44,4 @@ if (!scanDir(SRC_DIR)) {
     );
     process.exit(1);
 }
-console.log(`✅ All source files in server/src are within the ${MAX_LOC} LOC limit.`);
+console.log(`✅ All source files in src are within the ${MAX_LOC} LOC limit.`);

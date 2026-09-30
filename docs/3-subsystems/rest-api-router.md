@@ -170,8 +170,8 @@ Clients then reconnect with the new token: the runtime passes it as `authorizati
 ## Custom Routes
 
 ```typescript
-import { registerRoute } from "../server/src/api/index.ts";
-import { registerWebSocketRoute } from "../server/src/http/index.ts";
+import { registerRoute } from "../src/api/index.ts";
+import { registerWebSocketRoute } from "../src/http/index.ts";
 
 // HTTP route. Matches the exact path. Pass { prepend: true } to match before built-in routes.
 registerRoute("/status", async (req, res) => {

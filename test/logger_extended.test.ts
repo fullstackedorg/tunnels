@@ -109,7 +109,7 @@ test("logger_extended: loadPlugins dynamically imports plugins and throws on mis
     // Write a dummy ESM plugin
     fs.writeFileSync(
         pluginPath,
-        `import { registerHook } from '${path.resolve("server/src/utils/hooks.ts")}';\n` +
+        `import { registerHook } from '${path.resolve("src/utils/hooks.ts")}';\n` +
             `registerHook('tunnel_start', () => {});\n`,
         "utf-8"
     );

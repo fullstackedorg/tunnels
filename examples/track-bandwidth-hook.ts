@@ -1,11 +1,11 @@
 import type { Duplex } from "node:stream";
-import { registerHook } from "../server/src/utils/hooks.ts";
-import { logger } from "../server/src/utils/logger.ts";
+import { registerHook } from "../src/utils/hooks.ts";
+import { logger } from "../src/utils/logger.ts";
 
 /**
  * Plugin: per-session and per-process byte accounting.
  *
- * Load with: node server/src/main.ts --plugin ./examples/track-bandwidth-hook.ts
+ * Load with: node src/main.ts --plugin ./examples/track-bandwidth-hook.ts
  *
  * Hooks are registered when this module is imported. The Hub fires tunnel_connected and the
  * Edge fires edge_tunnel_connected; each runs before the streams resume, so every byte is seen.

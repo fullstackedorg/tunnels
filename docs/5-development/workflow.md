@@ -18,7 +18,7 @@ flowchart TD
     end
 
     subgraph Phase3["3. Code Implementation (Make Tests Pass)"]
-        SrcCode["TypeScript Sources (server/src/*.ts)\n(Node 24 Native Type-Stripping)"]
+        SrcCode["TypeScript Sources (src/*.ts)\n(Node 24 Native Type-Stripping)"]
         QualityGates["Quality Checks (npm run check)\nPrettier 4 Spaces, tsc, Max 300 LOC"]
         CovGate["Coverage Gate\n(Strictly >= 95% Line & Branch Coverage)"]
         SrcCode --> QualityGates --> CovGate
@@ -44,7 +44,7 @@ sequenceDiagram
     autonumber
     participant Docs as 1. Docs-as-Code (Markdown & Mermaid)
     participant Tests as 2. TDD Suite (node:test)
-    participant Impl as 3. Implementation (server/src/*.ts)
+    participant Impl as 3. Implementation (src/*.ts)
     participant Cloud as Cloud Drafts & Review (cli.ts)
 
     Note over Docs,Cloud: Phase 1: Documentation (Docs-as-Code)
@@ -96,7 +96,7 @@ Every feature, protocol enhancement, or subsystem refactoring in FullStacked Tun
 Once the documentation and architectural specifications are approved, **all defined functionalities are interpreted into tests**:
 
 1. **Translating Specifications into Executable Contracts**:
-    - Every requirement written in the documentation is directly mapped to a test case in `server/test/*.test.ts` or `server/test/integration/*.test.ts`.
+    - Every requirement written in the documentation is directly mapped to a test case in `test/*.test.ts` or `test/integration/*.test.ts`.
     - Built on native Node.js tooling: `node:test` and `node:assert/strict` (zero third-party test framework overhead).
 2. **Three-Tier Testing Hierarchy**:
     - **Unit Tests**: Test pure logic, binary frame parsers, ticket generation algorithms, and token validation.
@@ -111,7 +111,7 @@ Once the documentation and architectural specifications are approved, **all defi
 With the comprehensive test harness in place, the production code is authored:
 
 1. **The Green Phase (Make Tests Pass)**:
-    - Write TypeScript code in `server/src/*.ts` designed specifically to satisfy the failing test cases until the entire test suite passes.
+    - Write TypeScript code in `src/*.ts` designed specifically to satisfy the failing test cases until the entire test suite passes.
 2. **Architectural & Syntactic Compliance**:
     - Code must comply with Node.js 24 native type-stripping rules: no enums (use `const` maps + union types), no parameter properties in class constructors, mandatory `.ts` file extensions, and explicit `node:` module prefixes (see [Standards](standards.md)).
     - Every file must adhere to the hard budget of **maximum 300 LOC** (enforced by `scripts/check-loc.ts`). If a module reaches 250 LOC, it must be decomposed into focused single-responsibility submodules.
@@ -132,10 +132,10 @@ Node.js 24 LTS natively strips types from `.ts` files on the fly. No build step,
 
 ```bash
 # Run Hub in development (port 3000, filesystem storage)
-node server/src/main.ts --port 3000
+node src/main.ts --port 3000
 
 # Run Edge (connecting to local Hub)
-HUB_URL="ws://localhost:3000" TOKEN="edg_12345..." node server/src/main.ts
+HUB_URL="ws://localhost:3000" TOKEN="edg_12345..." node src/main.ts
 ```
 
 All source changes take effect immediately on process restart.
@@ -149,14 +149,14 @@ The project uses standard scripts for all routine tasks:
 ```json
 {
     "scripts": {
-        "start": "node server/src/main.ts",
+        "start": "node src/main.ts",
         "fmt": "prettier --write .",
         "fmt:check": "prettier --check .",
         "typecheck": "tsc --noEmit",
         "check:loc": "node scripts/check-loc.ts --max 300",
         "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
-        "test": "node --test server/test/*.test.ts",
-        "test:integration": "docker compose -f docker-compose.test.yml up -d && node --test server/test/integration/*.test.ts"
+        "test": "node --test test/*.test.ts",
+        "test:integration": "docker compose -f docker-compose.test.yml up -d && node --test test/integration/*.test.ts"
     },
     "prettier": {
         "tabWidth": 4,
@@ -181,7 +181,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const MAX_LOC = parseInt(process.argv[3] || "300", 10);
-const SRC_DIR = path.resolve(import.meta.dirname, "../server/src");
+const SRC_DIR = path.resolve(import.meta.dirname, "../src");
 
 function countLoc(filePath: string): number {
     const content = fs.readFileSync(filePath, "utf-8");
@@ -222,7 +222,7 @@ if (!scanDir(SRC_DIR)) {
     );
     process.exit(1);
 }
-console.log(`✅ All source files in server/src are within the ${MAX_LOC} LOC limit.`);
+console.log(`✅ All source files in src are within the ${MAX_LOC} LOC limit.`);
 ```
 
 ---

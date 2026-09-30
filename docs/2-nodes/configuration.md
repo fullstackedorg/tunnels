@@ -4,7 +4,7 @@ This page is the single source for every setting. Other documents link here inst
 
 ## Requirements
 
-- **Node.js 24 LTS or newer.** The server runs TypeScript sources directly using Node's built-in type stripping (`node server/src/main.ts`).
+- **Node.js 24 LTS or newer.** The server runs TypeScript sources directly using Node's built-in type stripping (`node src/main.ts`).
 
 ## Mode Selection
 

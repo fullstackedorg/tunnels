@@ -31,7 +31,7 @@ export class PostgreSQLStorageProvider implements StorageProvider {
         );
         if (res.rows.length < 2) {
             throw new Error(
-                "Database schema not initialized: 'edge' and/or 'tunnel' tables missing. Run: npx drizzle-kit push --config server/drizzle.config.ts"
+                "Database schema not initialized: 'edge' and/or 'tunnel' tables missing. Run: npx drizzle-kit push --config drizzle.config.ts"
             );
         }
     }
