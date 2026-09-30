@@ -33,9 +33,9 @@ The Tunnel Handler owns the lifecycle of every session that starts from a runtim
 3. **Liveness & Saturation** (relayed tunnels only): verified after `101`. If the Edge has no live lifeline, close immediately with `1014 edge_disconnected`. If the Edge's lifeline is saturated, close immediately with `1013 edge_saturated`.
 4. **Start**: register the session (see [Session Registry](#session-registry)) and dispatch `tunnel_start(req, tunnel)`. From here on `tunnel_end` fires exactly once.
 5. **Target stream**:
-   * **Direct**: `net.createConnection({ host: internalHost, port: internalPort })`, bounded by a plain timer that fires at the deadline, destroys the socket, and is cleared on `connect`. `socket.setTimeout()` is never used for this (it is an idle timeout). The target socket is paused on connect and uses TCP keepalive.
-   * **Relayed**: `warden.acquireRelayedStream(tunnel, req, deadline)` resolves with the relayed duplex at handoff, or rejects with a taxonomy reason (see [Relayed Failure Reason Sources](../1-concepts/protocol-spec.md#d-relayed-failure-reason-sources)).
-   * If the runtime disconnects first, the session ends with `client_aborted`, a 5s ticket tombstone is written to KV, and the Warden sends `cancel_tunnel` for relayed tunnels.
+    - **Direct**: `net.createConnection({ host: internalHost, port: internalPort })`, bounded by a plain timer that fires at the deadline, destroys the socket, and is cleared on `connect`. `socket.setTimeout()` is never used for this (it is an idle timeout). The target socket is paused on connect and uses TCP keepalive.
+    - **Relayed**: `warden.acquireRelayedStream(tunnel, req, deadline)` resolves with the relayed duplex at handoff, or rejects with a taxonomy reason (see [Relayed Failure Reason Sources](../1-concepts/protocol-spec.md#d-relayed-failure-reason-sources)).
+    - If the runtime disconnects first, the session ends with `client_aborted`, a 5s ticket tombstone is written to KV, and the Warden sends `cancel_tunnel` for relayed tunnels.
 6. **Splice**: attach both pipelines, await `tunnel_connected(req, tunnel, remoteSocket, targetSocket)` bounded by `HOOK_TIMEOUT`, then resume both streams. Hooks therefore observe every byte.
 7. **Teardown**: the first side to end or fail determines the reason. The close code is resolved dynamically from `CLOSE_CODES[reason]` ([Protocol Spec](../1-concepts/protocol-spec.md#5-close-codes)). For relayed sessions, both clean completions (`target_close`) and error closures propagate the reason and close code received from the Edge verbatim. If the session ended due to an error, the underlying `Error` instance is forwarded to the `tunnel_end` telemetry hook for rich diagnostics.
 
@@ -44,31 +44,38 @@ import { pipeline } from "node:stream";
 
 let closed = false;
 function teardown(reason: Reason, error?: Error) {
-  if (closed) return;
-  closed = true;
-  const code = CLOSE_CODES[reason]; // from the Protocol Spec close-code table
-  
-  if (runtimeWs.readyState === runtimeWs.OPEN) {
-    runtimeWs.close(code, reason);
-    // Event-driven flush: wait for close event or stream finish with a 500ms safety timer
-    const cleanup = () => {
-      runtimeDuplex.destroy(error);
-      targetStream.destroy(error);
-    };
-    const timer = setTimeout(cleanup, 500);
-    runtimeWs.once("close", () => { clearTimeout(timer); cleanup(); });
-  } else {
-    // Hard error or already closed: clean up immediately
-    runtimeDuplex.destroy(error);
-    targetStream.destroy(error);
-  }
-  
-  sessions.unregister(sessionId);
-  dispatchTelemetry("tunnel_end", req, tunnel, reason, error); // not awaited, includes Error if present
+    if (closed) return;
+    closed = true;
+    const code = CLOSE_CODES[reason]; // from the Protocol Spec close-code table
+
+    if (runtimeWs.readyState === runtimeWs.OPEN) {
+        runtimeWs.close(code, reason);
+        // Event-driven flush: wait for close event or stream finish with a 500ms safety timer
+        const cleanup = () => {
+            runtimeDuplex.destroy(error);
+            targetStream.destroy(error);
+        };
+        const timer = setTimeout(cleanup, 500);
+        runtimeWs.once("close", () => {
+            clearTimeout(timer);
+            cleanup();
+        });
+    } else {
+        // Hard error or already closed: clean up immediately
+        runtimeDuplex.destroy(error);
+        targetStream.destroy(error);
+    }
+
+    sessions.unregister(sessionId);
+    dispatchTelemetry("tunnel_end", req, tunnel, reason, error); // not awaited, includes Error if present
 }
 
-pipeline(runtimeDuplex, targetStream, (err) => teardown(err ? "stream_error" : "client_close", err ?? undefined));
-pipeline(targetStream, runtimeDuplex, (err) => teardown(err ? "stream_error" : "target_close", err ?? undefined));
+pipeline(runtimeDuplex, targetStream, (err) =>
+    teardown(err ? "stream_error" : "client_close", err ?? undefined)
+);
+pipeline(targetStream, runtimeDuplex, (err) =>
+    teardown(err ? "stream_error" : "target_close", err ?? undefined)
+);
 
 await runAwaitedHook("tunnel_connected", req, tunnel, runtimeDuplex, targetStream); // bounded, fail-open
 
@@ -80,13 +87,13 @@ targetStream.resume();
 
 Each worker keeps an in-memory index of its active sessions by `tunnelId` and by `edgeId`. It exists so that revocation takes effect immediately:
 
-| Trigger | Sessions closed | Code / reason |
-| :--- | :--- | :--- |
-| Tunnel token rolled | All sessions of that tunnel | `1000 token_rolled` |
-| Tunnel deleted | All sessions of that tunnel | `1000 tunnel_deleted` |
-| Tunnel `internalHost`, `internalPort`, or `edgeId` changed | All sessions of that tunnel | `1000 tunnel_updated` |
-| Edge token rolled | All sessions relayed through that Edge | `1000 token_rolled` |
-| Edge deleted (tunnels cascade) | All sessions of its tunnels | `1000 edge_deleted` |
+| Trigger                                                    | Sessions closed                        | Code / reason         |
+| :--------------------------------------------------------- | :------------------------------------- | :-------------------- |
+| Tunnel token rolled                                        | All sessions of that tunnel            | `1000 token_rolled`   |
+| Tunnel deleted                                             | All sessions of that tunnel            | `1000 tunnel_deleted` |
+| Tunnel `internalHost`, `internalPort`, or `edgeId` changed | All sessions of that tunnel            | `1000 tunnel_updated` |
+| Edge token rolled                                          | All sessions relayed through that Edge | `1000 token_rolled`   |
+| Edge deleted (tunnels cascade)                             | All sessions of its tunnels            | `1000 edge_deleted`   |
 
 The REST API applies the change in storage first, evicts caches, and then broadcasts `sever_sessions { tunnelId | edgeId, reason }`. In clustered mode the broadcast goes through the Primary to every worker. Changes to `name` or `metadata` do not close sessions.
 
@@ -104,8 +111,8 @@ In addition to REST-triggered mutations, the Hub exports a programmatic API allo
  * @returns Total number of sessions severed.
  */
 export async function severSessions(
-  filter: { tunnelId?: string; edgeId?: string },
-  reason: Reason = "token_rolled"
+    filter: { tunnelId?: string; edgeId?: string },
+    reason: Reason = "token_rolled"
 ): Promise<number>;
 ```
 

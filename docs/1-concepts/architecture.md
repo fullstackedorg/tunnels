@@ -153,7 +153,7 @@ All failure reasons and close codes are defined in the [Protocol Spec](protocol-
 
 ## Trust Boundaries
 
-* **Out of the box, nothing is authenticated beyond token possession.** Anyone who can reach the REST API can create tunnels, including direct tunnels to any host the Hub can reach. This is deliberate for tinkering; production deployments add security through [hooks](../4-extensibility/extending-security.md).
-* **Tokens are bearer secrets.** Possessing a tunnel token grants access to its target; possessing an edge token lets a daemon impersonate that Edge.
-* **The Edge trusts the Hub.** It dials whatever target an order names; restrict this with an `edge_tunnel_request` hook if the Hub is not fully trusted.
-* **TLS is provided by the reverse proxy**, never by the Hub itself.
+- **Out of the box, nothing is authenticated beyond token possession.** Anyone who can reach the REST API can create tunnels, including direct tunnels to any host the Hub can reach. This is deliberate for tinkering; production deployments add security through [hooks](../4-extensibility/extending-security.md).
+- **Tokens are bearer secrets.** Possessing a tunnel token grants access to its target; possessing an edge token lets a daemon impersonate that Edge.
+- **The Edge trusts the Hub.** It dials whatever target an order names; restrict this with an `edge_tunnel_request` hook if the Hub is not fully trusted.
+- **TLS is provided by the reverse proxy**, never by the Hub itself.

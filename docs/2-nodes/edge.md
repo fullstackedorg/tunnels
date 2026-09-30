@@ -54,13 +54,13 @@ Reconnect delays follow `min(MAX_RECONNECT_INTERVAL, RECONNECT_INTERVAL * 2^atte
 
 How each lifeline outcome is handled follows the [Client Retry Policy](../1-concepts/protocol-spec.md#client-retry-policy):
 
-| Outcome | Behavior |
-| :--- | :--- |
-| Network error, timeout, `500`, `503`, `heartbeat_timeout`, close `hub_shutdown` | Normal backoff. |
-| `429` | Wait `Retry-After` if present, otherwise normal backoff. |
-| `403` | Backoff jumps to `MAX_RECONNECT_INTERVAL`. |
-| Close `superseded` | Log a warning (another daemon or a newer connection uses this token) and reconnect after `MAX_RECONNECT_INTERVAL`. |
-| `401`, close `token_rolled` / `edge_deleted` | Enter the revoked state. |
+| Outcome                                                                         | Behavior                                                                                                           |
+| :------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------- |
+| Network error, timeout, `500`, `503`, `heartbeat_timeout`, close `hub_shutdown` | Normal backoff.                                                                                                    |
+| `429`                                                                           | Wait `Retry-After` if present, otherwise normal backoff.                                                           |
+| `403`                                                                           | Backoff jumps to `MAX_RECONNECT_INTERVAL`.                                                                         |
+| Close `superseded`                                                              | Log a warning (another daemon or a newer connection uses this token) and reconnect after `MAX_RECONNECT_INTERVAL`. |
+| `401`, close `token_rolled` / `edge_deleted`                                    | Enter the revoked state.                                                                                           |
 
 ### Revocation Handling
 
@@ -70,8 +70,8 @@ In the revoked state the Edge:
 2. Stops accepting orders.
 3. Lets in-flight sessions finish for up to `DRAIN_TIMEOUT` (default 30s), then force-closes the rest. When revocation comes from a token roll or deletion, the Hub also closes those sessions itself (`token_rolled` / `edge_deleted`), so draining is only a safety net.
 4. Stays alive and retries the lifeline every `REVOKED_POLL_INTERVAL` (default 300s).
-   * **With `TOKEN_FILE`**: the Edge re-reads the token from the file on disk before each poll attempt. In Kubernetes/Docker secrets environments, updating the secret file allows the daemon to automatically recover without restarting the pod or container!
-   * **With static `TOKEN`**: the poll acts as a quiescent keep-alive so container supervisors (e.g. `restart: always`) do not enter aggressive restart crash loops. Restart the daemon with the new token to resume.
+    - **With `TOKEN_FILE`**: the Edge re-reads the token from the file on disk before each poll attempt. In Kubernetes/Docker secrets environments, updating the secret file allows the daemon to automatically recover without restarting the pod or container!
+    - **With static `TOKEN`**: the poll acts as a quiescent keep-alive so container supervisors (e.g. `restart: always`) do not enter aggressive restart crash loops. Restart the daemon with the new token to resume.
 
 A `401` on a relayed socket (expired or already-claimed ticket) only aborts that session (`relay_dial_failed`); it never affects the lifeline.
 
@@ -97,32 +97,39 @@ import { pipeline } from "node:stream";
 
 let closed = false;
 function teardown(reason: Reason, error?: Error) {
-  if (closed) return;
-  closed = true;
-  const code = CLOSE_CODES[reason]; // mapping from the Protocol Spec close-code table
-  
-  if (relayedWs.readyState === relayedWs.OPEN) {
-    relayedWs.close(code, reason);
-    // Event-driven flush: wait for close event or destination finish with a 500ms safety timer
-    const cleanup = () => {
-      relayedDuplex.destroy(error);
-      targetSocket.destroy(error);
-    };
-    const timer = setTimeout(cleanup, 500);
-    relayedWs.once("close", () => { clearTimeout(timer); cleanup(); });
-  } else {
-    // Hard error or already closed: clean up immediately
-    relayedDuplex.destroy(error);
-    targetSocket.destroy(error);
-  }
-  
-  dispatchTelemetry("edge_tunnel_end", context, tunnel, reason, error); // not awaited, includes Error if present
+    if (closed) return;
+    closed = true;
+    const code = CLOSE_CODES[reason]; // mapping from the Protocol Spec close-code table
+
+    if (relayedWs.readyState === relayedWs.OPEN) {
+        relayedWs.close(code, reason);
+        // Event-driven flush: wait for close event or destination finish with a 500ms safety timer
+        const cleanup = () => {
+            relayedDuplex.destroy(error);
+            targetSocket.destroy(error);
+        };
+        const timer = setTimeout(cleanup, 500);
+        relayedWs.once("close", () => {
+            clearTimeout(timer);
+            cleanup();
+        });
+    } else {
+        // Hard error or already closed: clean up immediately
+        relayedDuplex.destroy(error);
+        targetSocket.destroy(error);
+    }
+
+    dispatchTelemetry("edge_tunnel_end", context, tunnel, reason, error); // not awaited, includes Error if present
 }
 
 // Callback-form pipeline: (source, destination, callback). Each pipeline ends its destination on EOF,
 // and teardown() then closes the other direction (no half-close).
-pipeline(relayedDuplex, targetSocket, (err) => teardown(err ? "stream_error" : "client_close", err ?? undefined));
-pipeline(targetSocket, relayedDuplex, (err) => teardown(err ? "stream_error" : "target_close", err ?? undefined));
+pipeline(relayedDuplex, targetSocket, (err) =>
+    teardown(err ? "stream_error" : "client_close", err ?? undefined)
+);
+pipeline(targetSocket, relayedDuplex, (err) =>
+    teardown(err ? "stream_error" : "target_close", err ?? undefined)
+);
 
 await runAwaitedHook("edge_tunnel_connected", context, tunnel, relayedDuplex, targetSocket); // bounded by HOOK_TIMEOUT, fail-open
 
@@ -136,18 +143,18 @@ targetSocket.resume();
 
 With `WORKERS > 1` the Edge runs a Primary and workers on one host:
 
-* **Primary**: holds the single lifeline and the heartbeat. It tracks pending orders in `edgeOrders: Map<ticket, { workerId }>` and active sessions in `activeSessions: Map<ticket, workerId>`, routing each order to the least-busy worker.
-* **Workers**: run `edge_tunnel_request`, perform the parallel dials, splice, and emit the `edge_tunnel_*` hooks.
+- **Primary**: holds the single lifeline and the heartbeat. It tracks pending orders in `edgeOrders: Map<ticket, { workerId }>` and active sessions in `activeSessions: Map<ticket, workerId>`, routing each order to the least-busy worker.
+- **Workers**: run `edge_tunnel_request`, perform the parallel dials, splice, and emit the `edge_tunnel_*` hooks.
 
 IPC messages (all use the `type` discriminator, all keyed by `ticket`):
 
-| `type` | Direction | Payload | Purpose |
-| :--- | :--- | :--- | :--- |
-| `connect_tunnel` | Primary → worker | `{ reqId, ticket, tunnel, client, deadline }` | `deadline = receivedAt + connectTimeoutMs` as absolute epoch ms (same host clock). |
-| `cancel_tunnel` | Primary → worker | `{ ticket, reason }` | Abort in-flight dials. |
-| `order_handoff` | worker → Primary | `{ ticket }` | Relayed socket accepted; Primary moves order from `edgeOrders` to `activeSessions`. |
-| `connect_tunnel_failed` | worker → Primary | `{ reqId, ticket, reason }` | Primary forwards the frame on the lifeline and removes the pending order. |
-| `session_ended` | worker → Primary | `{ ticket }` | Primary looks up `activeSessions`, decrements the worker's active count, and deletes the session. |
+| `type`                  | Direction        | Payload                                       | Purpose                                                                                           |
+| :---------------------- | :--------------- | :-------------------------------------------- | :------------------------------------------------------------------------------------------------ |
+| `connect_tunnel`        | Primary → worker | `{ reqId, ticket, tunnel, client, deadline }` | `deadline = receivedAt + connectTimeoutMs` as absolute epoch ms (same host clock).                |
+| `cancel_tunnel`         | Primary → worker | `{ ticket, reason }`                          | Abort in-flight dials.                                                                            |
+| `order_handoff`         | worker → Primary | `{ ticket }`                                  | Relayed socket accepted; Primary moves order from `edgeOrders` to `activeSessions`.               |
+| `connect_tunnel_failed` | worker → Primary | `{ reqId, ticket, reason }`                   | Primary forwards the frame on the lifeline and removes the pending order.                         |
+| `session_ended`         | worker → Primary | `{ ticket }`                                  | Primary looks up `activeSessions`, decrements the worker's active count, and deletes the session. |
 
 **Worker crash**: the Primary forks a replacement and, for each pending order owned by the dead worker (not yet `order_handoff`), sends `connect_tunnel_failed` with `relay_dial_failed`. Established sessions on that worker end when their sockets close; the Hub sees the relayed sockets drop and closes the runtime sockets with `stream_error`.
 

@@ -28,19 +28,19 @@ All four methods share one signature. Pass a caught error as `meta.error`; it is
 
 ## Levels and Output
 
-| Level | Stream | Typical content |
-| :--- | :--- | :--- |
-| `debug` | stdout | Socket-level details. |
-| `info` | stdout | Connections, sessions, registrations. |
-| `warn` | stderr | Recoverable anomalies: retries, heartbeat timeouts, revoked Edge. |
-| `error` | stderr | Unexpected failures; triggers a breadcrumb dump. |
+| Level   | Stream | Typical content                                                   |
+| :------ | :----- | :---------------------------------------------------------------- |
+| `debug` | stdout | Socket-level details.                                             |
+| `info`  | stdout | Connections, sessions, registrations.                             |
+| `warn`  | stderr | Recoverable anomalies: retries, heartbeat timeouts, revoked Edge. |
+| `error` | stderr | Unexpected failures; triggers a breadcrumb dump.                  |
 
 Entries below `LOG_LEVEL` (default `info`) are not written or dispatched to the `log` hook, but are still kept in the ring buffer. `-q` / `QUIET` is shorthand for `LOG_LEVEL=warn`.
 
 Formats (`LOG_FORMAT`):
 
-* `text`: `[2026-09-23T20:14:58.120Z] [INFO] [Tunnel] Session started {"reqId":"..."}`
-* `json`: one object per line: `{"timestamp":"...","level":"info","category":"Tunnel","message":"Session started","reqId":"...","worker":"<bootId>:2"}`
+- `text`: `[2026-09-23T20:14:58.120Z] [INFO] [Tunnel] Session started {"reqId":"..."}`
+- `json`: one object per line: `{"timestamp":"...","level":"info","category":"Tunnel","message":"Session started","reqId":"...","worker":"<bootId>:2"}`
 
 Every entry includes the worker identity, and the `reqId` when it relates to a request.
 
@@ -52,16 +52,16 @@ The logger keeps the last 100 entries of all levels and categories in a ring buf
 
 ```typescript
 registerHook("log", (_req: null, entry: LogEntry) => {
-  // e.g. forward entry to a log collector
+    // e.g. forward entry to a log collector
 });
 
 interface LogEntry {
-  timestamp: string;
-  level: "debug" | "info" | "warn" | "error";
-  category: string;
-  message: string;
-  meta?: Record<string, any>;
-  worker: string;
+    timestamp: string;
+    level: "debug" | "info" | "warn" | "error";
+    category: string;
+    message: string;
+    meta?: Record<string, any>;
+    worker: string;
 }
 ```
 

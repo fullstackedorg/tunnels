@@ -7,6 +7,7 @@ Every service recipe has two steps:
 
 > [!NOTE]
 > The `fullstacked/tunnel` module is built directly into the FullStacked runtime. Execute any example script with:
+>
 > ```bash
 > npx fullstacked --file examples/test-pg.ts
 > ```
@@ -42,9 +43,18 @@ curl -X POST http://localhost:3000/tunnels \
 import tunnel from "fullstacked/tunnel";
 import pg from "pg";
 
-const host = await tunnel.register({ host: "localhost:3000", authorization: "tun_4f8a9e2d1c3b..." });
+const host = await tunnel.register({
+    host: "localhost:3000",
+    authorization: "tun_4f8a9e2d1c3b...",
+});
 
-const pool = new pg.Pool({ host, port: 5432, user: "postgres", password: "password", database: "postgres" });
+const pool = new pg.Pool({
+    host,
+    port: 5432,
+    user: "postgres",
+    password: "password",
+    database: "postgres",
+});
 const { rows } = await pool.query("SELECT NOW()");
 console.log(rows[0]);
 await pool.end();
@@ -62,7 +72,10 @@ curl -X POST http://localhost:3000/tunnels \
 import tunnel from "fullstacked/tunnel";
 import { createClient } from "redis";
 
-const host = await tunnel.register({ host: "localhost:3000", authorization: "tun_9b2c3d4e5f6a..." });
+const host = await tunnel.register({
+    host: "localhost:3000",
+    authorization: "tun_9b2c3d4e5f6a...",
+});
 
 const client = createClient({ url: `redis://${host}:6379` });
 await client.connect();
@@ -83,9 +96,18 @@ curl -X POST http://localhost:3000/tunnels \
 import tunnel from "fullstacked/tunnel";
 import mysql from "mysql2/promise";
 
-const host = await tunnel.register({ host: "localhost:3000", authorization: "tun_7a1f2e3d4c5b..." });
+const host = await tunnel.register({
+    host: "localhost:3000",
+    authorization: "tun_7a1f2e3d4c5b...",
+});
 
-const connection = await mysql.createConnection({ host, port: 3306, user: "root", password: "password", database: "test" });
+const connection = await mysql.createConnection({
+    host,
+    port: 3306,
+    user: "root",
+    password: "password",
+    database: "test",
+});
 const [rows] = await connection.execute("SELECT 1 + 1 AS solution");
 console.log(rows);
 await connection.end();
@@ -103,13 +125,16 @@ curl -X POST http://localhost:3000/tunnels \
 import tunnel from "fullstacked/tunnel";
 import { S3Client, ListBucketsCommand } from "@aws-sdk/client-s3";
 
-const host = await tunnel.register({ host: "localhost:3000", authorization: "tun_3c8e1a2b5d4e..." });
+const host = await tunnel.register({
+    host: "localhost:3000",
+    authorization: "tun_3c8e1a2b5d4e...",
+});
 
 const s3 = new S3Client({
-  endpoint: `http://${host}:9000`,
-  region: "us-east-1",
-  credentials: { accessKeyId: "minioadmin", secretAccessKey: "minioadmin" },
-  forcePathStyle: true,
+    endpoint: `http://${host}:9000`,
+    region: "us-east-1",
+    credentials: { accessKeyId: "minioadmin", secretAccessKey: "minioadmin" },
+    forcePathStyle: true,
 });
 const { Buckets } = await s3.send(new ListBucketsCommand({}));
 console.log(Buckets);
@@ -127,7 +152,10 @@ curl -X POST http://localhost:3000/tunnels \
 // test-fetch.ts
 import tunnel from "fullstacked/tunnel";
 
-const host = await tunnel.register({ host: "localhost:3000", authorization: "tun_1b5e9f8a2c4d..." });
+const host = await tunnel.register({
+    host: "localhost:3000",
+    authorization: "tun_1b5e9f8a2c4d...",
+});
 
 const response = await fetch(`http://${host}:8080/health`);
 console.log(await response.json());
@@ -160,7 +188,10 @@ From any FullStacked runtime:
 import tunnel from "fullstacked/tunnel";
 import pg from "pg";
 
-const host = await tunnel.register({ host: "tunnels.example.com:443", authorization: "tun_1a2b3c4d..." });
+const host = await tunnel.register({
+    host: "tunnels.example.com:443",
+    authorization: "tun_1a2b3c4d...",
+});
 
 const pool = new pg.Pool({ host, port: 5432, user: "postgres" });
 console.log((await pool.query("SELECT NOW()")).rows[0]);
@@ -176,7 +207,7 @@ Allow runtime connections only from the local network. `req.clientIp` honors `TR
 import { registerHook } from "../server/src/utils/hooks.ts";
 
 registerHook("tunnel_request", (req) => {
-  if (req.clientIp !== "127.0.0.1" && !req.clientIp.startsWith("192.168.")) req.deny(); // 403
+    if (req.clientIp !== "127.0.0.1" && !req.clientIp.startsWith("192.168.")) req.deny(); // 403
 });
 ```
 

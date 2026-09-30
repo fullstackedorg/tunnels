@@ -20,8 +20,8 @@ FullStacked Tunnels is **not secured out of the box**: the REST API needs no cre
 
 Two consequences of the open default to keep in mind:
 
-* **Anyone who can reach the REST API can create tunnels**, including direct tunnels to any host the Hub can reach (its own `localhost`, other services on its network, cloud metadata endpoints). Recipes 1 and 6 address this.
-* **Tokens are bearer secrets** and are returned by `GET` endpoints. Restrict who can call the API (Recipe 1) and who can see which rows (Recipe 5).
+- **Anyone who can reach the REST API can create tunnels**, including direct tunnels to any host the Hub can reach (its own `localhost`, other services on its network, cloud metadata endpoints). Recipes 1 and 6 address this.
+- **Tokens are bearer secrets** and are returned by `GET` endpoints. Restrict who can call the API (Recipe 1) and who can see which rows (Recipe 5).
 
 All gating hooks are fail-closed; see the [execution model](hooks.md#execution-model). Use `req.clientIp` (not `req.socket.remoteAddress`) for anything IP-based: it honors `TRUSTED_PROXIES` and normalizes IPv4-mapped addresses.
 
@@ -42,13 +42,13 @@ const expected = Buffer.from(ADMIN_TOKEN);
 const PUBLIC_PATHS = new Set(["/status"]);
 
 registerHook("rest_access", (req) => {
-  const path = (req.url ?? "/").split("?")[0];
-  if (PUBLIC_PATHS.has(path)) return;
+    const path = (req.url ?? "/").split("?")[0];
+    if (PUBLIC_PATHS.has(path)) return;
 
-  const header = req.headers.authorization ?? "";
-  const presented = Buffer.from(header.startsWith("Bearer ") ? header.slice(7) : header);
-  const ok = presented.length === expected.length && crypto.timingSafeEqual(presented, expected);
-  if (!ok) req.deny(); // 403
+    const header = req.headers.authorization ?? "";
+    const presented = Buffer.from(header.startsWith("Bearer ") ? header.slice(7) : header);
+    const ok = presented.length === expected.length && crypto.timingSafeEqual(presented, expected);
+    if (!ok) req.deny(); // 403
 });
 ```
 
@@ -66,8 +66,8 @@ allowed.addSubnet("192.168.1.0", 24);
 allowed.addAddress("127.0.0.1");
 
 registerHook("tunnel_request", (req, tunnel) => {
-  const family = net.isIPv6(req.clientIp) ? "ipv6" : "ipv4";
-  if (!allowed.check(req.clientIp, family)) req.deny(); // 403
+    const family = net.isIPv6(req.clientIp) ? "ipv6" : "ipv4";
+    if (!allowed.check(req.clientIp, family)) req.deny(); // 403
 });
 ```
 
@@ -84,14 +84,16 @@ if (!SECRET) throw new Error("TUNNEL_SIGNING_SECRET must be set");
 const MAX_SKEW_SECONDS = 60;
 
 registerHook("tunnel_request", (req) => {
-  const token = req.headers.authorization ?? "";
-  const ts = Number(req.headers["x-signature-ts"]);
-  const sig = String(req.headers["x-signature"] ?? "");
-  if (!Number.isInteger(ts) || Math.abs(Date.now() / 1000 - ts) > MAX_SKEW_SECONDS) return req.deny();
+    const token = req.headers.authorization ?? "";
+    const ts = Number(req.headers["x-signature-ts"]);
+    const sig = String(req.headers["x-signature"] ?? "");
+    if (!Number.isInteger(ts) || Math.abs(Date.now() / 1000 - ts) > MAX_SKEW_SECONDS)
+        return req.deny();
 
-  const expected = crypto.createHmac("sha256", SECRET).update(`${token}.${ts}`).digest();
-  const presented = Buffer.from(sig, "hex");
-  if (presented.length !== expected.length || !crypto.timingSafeEqual(presented, expected)) req.deny();
+    const expected = crypto.createHmac("sha256", SECRET).update(`${token}.${ts}`).digest();
+    const presented = Buffer.from(sig, "hex");
+    if (presented.length !== expected.length || !crypto.timingSafeEqual(presented, expected))
+        req.deny();
 });
 ```
 
@@ -109,21 +111,21 @@ const MAX_PER_WINDOW = 60;
 const windows = new Map<string, { count: number; resetAt: number }>();
 
 setInterval(() => {
-  const now = Date.now();
-  for (const [ip, w] of windows) if (now >= w.resetAt) windows.delete(ip);
+    const now = Date.now();
+    for (const [ip, w] of windows) if (now >= w.resetAt) windows.delete(ip);
 }, WINDOW_SECONDS * 1000).unref();
 
 registerHook("tunnel_request", (req) => {
-  const now = Date.now();
-  let w = windows.get(req.clientIp);
-  if (!w || now >= w.resetAt) {
-    w = { count: 0, resetAt: now + WINDOW_SECONDS * 1000 };
-    windows.set(req.clientIp, w);
-  }
-  if (++w.count > MAX_PER_WINDOW) {
-    const retryAfter = Math.ceil((w.resetAt - now) / 1000);
-    req.deny(429, "Too Many Requests", { "Retry-After": String(retryAfter) });
-  }
+    const now = Date.now();
+    let w = windows.get(req.clientIp);
+    if (!w || now >= w.resetAt) {
+        w = { count: 0, resetAt: now + WINDOW_SECONDS * 1000 };
+        windows.set(req.clientIp, w);
+    }
+    if (++w.count > MAX_PER_WINDOW) {
+        const retryAfter = Math.ceil((w.resetAt - now) / 1000);
+        req.deny(429, "Too Many Requests", { "Retry-After": String(retryAfter) });
+    }
 });
 ```
 
@@ -141,54 +143,57 @@ type User = { id: string; orgId: string; role: "admin" | "member" };
 
 // 1. Authenticate and attach the user.
 registerHook("rest_access", async (req) => {
-  const user = await verifySession(req.headers.authorization); // your implementation
-  if (!user) return req.deny();
-  (req as any).user = user;
+    const user = await verifySession(req.headers.authorization); // your implementation
+    if (!user) return req.deny();
+    (req as any).user = user;
 });
 
 // 2. Scope every list/read/update/delete/roll to the caller's organization.
 for (const table of ["tunnel", "edge"] as const) {
-  registerHook(`scope_${table}`, (req, query) => {
-    const user = (req as any).user as User;
-    if (user.role === "admin") return;
-    query.where = [...(query.where ?? []), { column: "metadata.orgId", operator: "eq", value: user.orgId }];
-  });
+    registerHook(`scope_${table}`, (req, query) => {
+        const user = (req as any).user as User;
+        if (user.role === "admin") return;
+        query.where = [
+            ...(query.where ?? []),
+            { column: "metadata.orgId", operator: "eq", value: user.orgId },
+        ];
+    });
 
-  // 3. Stamp ownership on creation.
-  registerHook(`create_${table}`, (req, payload) => {
-    const user = (req as any).user as User;
-    payload.metadata = { ...payload.metadata, orgId: user.orgId, userId: user.id };
-  });
+    // 3. Stamp ownership on creation.
+    registerHook(`create_${table}`, (req, payload) => {
+        const user = (req as any).user as User;
+        payload.metadata = { ...payload.metadata, orgId: user.orgId, userId: user.id };
+    });
 
-  // 4. Ownership keys can never be changed by members.
-  registerHook(`update_${table}`, (req, _item, updates) => {
-    const user = (req as any).user as User;
-    if (user.role !== "admin" && updates.metadata) {
-      delete updates.metadata.orgId;
-      delete updates.metadata.userId;
-    }
-  });
+    // 4. Ownership keys can never be changed by members.
+    registerHook(`update_${table}`, (req, _item, updates) => {
+        const user = (req as any).user as User;
+        if (user.role !== "admin" && updates.metadata) {
+            delete updates.metadata.orgId;
+            delete updates.metadata.userId;
+        }
+    });
 }
 
 // 5. A tunnel may only be bound to an edge of the same organization.
 async function assertEdgeOwnership(req: any, edgeId: string | null | undefined) {
-  if (!edgeId || req.user.role === "admin") return;
-  const edge = await storage.get("edge", edgeId, {
-    where: [{ column: "metadata.orgId", operator: "eq", value: req.user.orgId }],
-  });
-  if (!edge) req.deny(); // prevents routing into another tenant's private network
+    if (!edgeId || req.user.role === "admin") return;
+    const edge = await storage.get("edge", edgeId, {
+        where: [{ column: "metadata.orgId", operator: "eq", value: req.user.orgId }],
+    });
+    if (!edge) req.deny(); // prevents routing into another tenant's private network
 }
 registerHook("create_tunnel", (req, payload) => assertEdgeOwnership(req, payload.edgeId));
 registerHook("update_tunnel", (req, _item, updates) => {
-  if ("edgeId" in updates) return assertEdgeOwnership(req, updates.edgeId);
+    if ("edgeId" in updates) return assertEdgeOwnership(req, updates.edgeId);
 });
 
 // 6. Programmatically sever active sessions when an external revocation event occurs:
 import { severSessions } from "../server/src/handlers/tunnel.ts";
 
 export async function onExternalRevocation(tunnelId: string) {
-  const count = await severSessions({ tunnelId }, "token_rolled");
-  console.log(`Severed ${count} active session(s) for revoked tunnel ${tunnelId}`);
+    const count = await severSessions({ tunnelId }, "token_rolled");
+    console.log(`Severed ${count} active session(s) for revoked tunnel ${tunnelId}`);
 }
 ```
 
@@ -203,16 +208,18 @@ import net from "node:net";
 import { registerHook } from "../server/src/utils/hooks.ts";
 
 const blocked = new net.BlockList();
-blocked.addSubnet("127.0.0.0", 8);        // Hub's own loopback
-blocked.addSubnet("169.254.0.0", 16);     // link-local, cloud metadata
+blocked.addSubnet("127.0.0.0", 8); // Hub's own loopback
+blocked.addSubnet("169.254.0.0", 16); // link-local, cloud metadata
 blocked.addAddress("::1", "ipv6");
 
 function check(req: any, host?: string, edgeId?: string | null) {
-  if (edgeId || !host || !net.isIP(host)) return; // relayed tunnels are checked on the Edge
-  if (blocked.check(host, net.isIPv6(host) ? "ipv6" : "ipv4")) req.deny();
+    if (edgeId || !host || !net.isIP(host)) return; // relayed tunnels are checked on the Edge
+    if (blocked.check(host, net.isIPv6(host) ? "ipv6" : "ipv4")) req.deny();
 }
 registerHook("create_tunnel", (req, p) => check(req, p.internalHost, p.edgeId));
-registerHook("update_tunnel", (req, item, u) => check(req, u.internalHost ?? item.internalHost, "edgeId" in u ? u.edgeId : item.edgeId));
+registerHook("update_tunnel", (req, item, u) =>
+    check(req, u.internalHost ?? item.internalHost, "edgeId" in u ? u.edgeId : item.edgeId)
+);
 ```
 
 Hostnames are resolved at dial time; to cover them too, also resolve and check in `tunnel_request`, or allow only an explicit list of hosts.
@@ -225,6 +232,6 @@ import { registerHook } from "../server/src/utils/hooks.ts";
 const ALLOWED_TARGETS = new Set(["127.0.0.1:5432", "127.0.0.1:6379"]);
 
 registerHook("edge_tunnel_request", (context, tunnel) => {
-  if (!ALLOWED_TARGETS.has(`${tunnel.internalHost}:${tunnel.internalPort}`)) context.deny(); // hook_denied
+    if (!ALLOWED_TARGETS.has(`${tunnel.internalHost}:${tunnel.internalPort}`)) context.deny(); // hook_denied
 });
 ```

@@ -1,0 +1,37 @@
+{
+    "name": "fullstacked-tunnels",
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "start": "node server/src/main.ts",
+        "fmt": "prettier --write .",
+        "fmt:check": "prettier --check .",
+        "typecheck": "tsc --noEmit",
+        "check:loc": "node scripts/check-loc.ts --max 300",
+        "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
+        "test": "node --test server/test/*.test.ts"
+    },
+    "prettier": {
+        "tabWidth": 4,
+        "useTabs": false,
+        "semi": true,
+        "singleQuote": false,
+        "trailingComma": "es5",
+        "printWidth": 100,
+        "arrowParens": "always"
+    },
+    "dependencies": {
+        "drizzle-orm": "^0.38.0",
+        "pg": "^8.13.0",
+        "redis": "^4.7.0",
+        "ws": "^8.18.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.0",
+        "@types/pg": "^8.11.10",
+        "@types/ws": "^8.5.12",
+        "drizzle-kit": "^0.30.0",
+        "prettier": "^3.3.3",
+        "typescript": "^5.6.3"
+    }
+}

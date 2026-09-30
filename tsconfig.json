@@ -1,0 +1,15 @@
+{
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "allowImportingTsExtensions": true,
+        "rewriteRelativeImportExtensions": false,
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true
+    },
+    "include": ["server/src/**/*.ts", "server/test/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"]
+}

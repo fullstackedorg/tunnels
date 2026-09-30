@@ -46,10 +46,10 @@ When an upgrade presents an edge token:
 
 Presence lets any worker, and `GET /edges`, know whether an Edge is online:
 
-| Key | Value | TTL | Written |
-| :--- | :--- | :--- | :--- |
-| `edge:<edgeId>:worker` | Worker identity `<bootId>:<workerId>` | `2 * HEARTBEAT_TIMEOUT` (60s) | On accept, then refreshed once per heartbeat sweep while the lifeline is alive. |
-| `edge:<edgeId>:last_seen` | Unix seconds of the last frame received | 30 days (rolling) | On accept, then once per heartbeat sweep. |
+| Key                       | Value                                   | TTL                           | Written                                                                         |
+| :------------------------ | :-------------------------------------- | :---------------------------- | :------------------------------------------------------------------------------ |
+| `edge:<edgeId>:worker`    | Worker identity `<bootId>:<workerId>`   | `2 * HEARTBEAT_TIMEOUT` (60s) | On accept, then refreshed once per heartbeat sweep while the lifeline is alive. |
+| `edge:<edgeId>:last_seen` | Unix seconds of the last frame received | 30 days (rolling)             | On accept, then once per heartbeat sweep.                                       |
 
 Presence is written once per sweep per lifeline, never per pong, so KV load is one write pair per Edge per `HEARTBEAT_INTERVAL`.
 
@@ -73,23 +73,25 @@ Established relayed sessions do not depend on the lifeline and keep running.
 `acquireRelayedStream(tunnel, req, deadline)` is called by the [Tunnel Handler](tunnel-handlers.md) after the runtime upgrade was accepted.
 
 1. **Ticket**: generate `tmp_...`, then:
-   ```typescript
-   await kv.set(`relayed_request:${ticket}`,
-     { originWorker, lifelineWorker, edgeId, reqId, tunnelId },
-     CONNECT_TIMEOUT + 2);
-   relayedRequests.set(ticket, { resolve, reject, lifelineWorker, reqId, deadline });
-   ```
+    ```typescript
+    await kv.set(
+        `relayed_request:${ticket}`,
+        { originWorker, lifelineWorker, edgeId, reqId, tunnelId },
+        CONNECT_TIMEOUT + 2
+    );
+    relayedRequests.set(ticket, { resolve, reject, lifelineWorker, reqId, deadline });
+    ```
 2. **Dispatch**: if the lifeline is on this worker, handle it locally; otherwise send `relayed_tunnel_request` through the Primary to the lifeline worker.
 3. **Lifeline worker**:
-   * No lifeline for this Edge any more (stale presence): fail with `edge_disconnected`.
-   * Pending orders `>= MAX_PENDING_ORDERS`, or `ws.bufferedAmount > MAX_LIFELINE_BUFFER`: fail with `edge_saturated`.
-   * Otherwise record `pendingOrders.set(ticket, { originWorker, reqId, edgeId, expiresAt: deadline + 2000 })` and write `connect_tunnel` with `connectTimeoutMs = deadline - Date.now()` (not sent if not positive; fail with `connect_timeout`).
+    - No lifeline for this Edge any more (stale presence): fail with `edge_disconnected`.
+    - Pending orders `>= MAX_PENDING_ORDERS`, or `ws.bufferedAmount > MAX_LIFELINE_BUFFER`: fail with `edge_saturated`.
+    - Otherwise record `pendingOrders.set(ticket, { originWorker, reqId, edgeId, expiresAt: deadline + 2000 })` and write `connect_tunnel` with `connectTimeoutMs = deadline - Date.now()` (not sent if not positive; fail with `connect_timeout`).
 4. **Outcomes** (all delivered to the origin worker, which tears the session down with the given reason):
-   * **Handoff**: see [Relayed Socket Arrival](#relayed-socket-arrival). The origin worker notifies the lifeline worker (`relayed_tunnel_handoff`), which deletes the pending order.
-   * **`connect_tunnel_failed`**: the lifeline worker deletes the ticket (`kv.del`), deletes the pending order, and sends `relayed_tunnel_failed` with the Edge's reason, verbatim.
-   * **Lifeline lost**: `edge_disconnected`.
-   * **Runtime disconnects before handoff**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "client_aborted" }, 5)`), deletes its parked entry, ends the session with `client_aborted`, and sends `relayed_tunnel_cancel { ticket, reason: "client_aborted" }` so the lifeline worker looks up `edgeLifelines.get(edgeId)` and writes `cancel_tunnel`.
-   * **Deadline**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "connect_timeout" }, 5)`), deletes its parked entry, closes the runtime socket with `connect_timeout`, and sends `relayed_tunnel_cancel { ticket, reason: "connect_timeout" }`.
+    - **Handoff**: see [Relayed Socket Arrival](#relayed-socket-arrival). The origin worker notifies the lifeline worker (`relayed_tunnel_handoff`), which deletes the pending order.
+    - **`connect_tunnel_failed`**: the lifeline worker deletes the ticket (`kv.del`), deletes the pending order, and sends `relayed_tunnel_failed` with the Edge's reason, verbatim.
+    - **Lifeline lost**: `edge_disconnected`.
+    - **Runtime disconnects before handoff**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "client_aborted" }, 5)`), deletes its parked entry, ends the session with `client_aborted`, and sends `relayed_tunnel_cancel { ticket, reason: "client_aborted" }` so the lifeline worker looks up `edgeLifelines.get(edgeId)` and writes `cancel_tunnel`.
+    - **Deadline**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "connect_timeout" }, 5)`), deletes its parked entry, closes the runtime socket with `connect_timeout`, and sends `relayed_tunnel_cancel { ticket, reason: "connect_timeout" }`.
 
 Pending orders are not given individual timers. Entries past `expiresAt` are ignored and removed by the heartbeat sweep; the sweep delay only affects memory reclamation, never client-visible timing.
 
@@ -98,8 +100,8 @@ Pending orders are not given individual timers. Entries past `expiresAt` are ign
 A relayed socket may arrive on any worker (the receiving worker):
 
 1. **Claim**: always `getdel relayed_request:<ticket>` first, on every worker and in single-process mode. This is the only claim step, so a ticket can be used exactly once even if it is replayed concurrently to several workers.
-   * `null`: `401 Unauthorized`.
-   * `{ status: "cancelled", reason }`: close the incoming socket immediately with that reason (avoids false 401s on cancellations/timeouts).
+    - `null`: `401 Unauthorized`.
+    - `{ status: "cancelled", reason }`: close the incoming socket immediately with that reason (avoids false 401s on cancellations/timeouts).
 2. **Local**: if the ticket's `originWorker` is this worker, look up `relayedRequests.get(ticket)`. If the entry is gone (the session already timed out or aborted), destroy the socket. Otherwise complete the upgrade, wrap it with `createWebSocketStream(ws, { allowHalfOpen: false })`, and resolve the parked promise: this is **handoff**.
 3. **Remote**: otherwise migrate the raw socket to the origin worker (next section), which performs step 2.
 4. After handoff, if the target dial on the Edge later fails, the Edge closes the relayed socket with `1014` and `target_unreachable` / `connect_timeout`; the Tunnel Handler propagates that close to the runtime socket.
@@ -139,42 +141,42 @@ sequenceDiagram
 
 Migration details:
 
-* The receiving worker neither completes the handshake nor reads further bytes; it forwards the request headers and the already-read `head` bytes with the socket.
-* The Primary and workers use IPC `serialization: "advanced"`, so `head` arrives as a `Buffer`. The origin worker passes it as the third argument of `wss.handleUpgrade` and never calls `socket.unshift`.
-* The origin worker builds a minimal `IncomingMessage`-compatible adapter (`method`, `url: "/"`, `headers`, `socket`) for `ws`.
+- The receiving worker neither completes the handshake nor reads further bytes; it forwards the request headers and the already-read `head` bytes with the socket.
+- The Primary and workers use IPC `serialization: "advanced"`, so `head` arrives as a `Buffer`. The origin worker passes it as the third argument of `wss.handleUpgrade` and never calls `socket.unshift`.
+- The origin worker builds a minimal `IncomingMessage`-compatible adapter (`method`, `url: "/"`, `headers`, `socket`) for `ws`.
 
 ### IPC Messages
 
 All messages carry `type`, `target` (worker identity), and `ticket` where applicable.
 
-| `type` | Route | Payload | Purpose |
-| :--- | :--- | :--- | :--- |
-| `relayed_tunnel_request` | origin → lifeline worker | `{ ticket, reqId, edgeId, tunnel, client, deadline, originWorker }` | Ask the lifeline worker to send `connect_tunnel`. `deadline` is absolute epoch ms. |
-| `relayed_tunnel_cancel` | origin or Primary → lifeline worker | `{ ticket, reason }` | Look up `edgeId` in `pendingOrders`, send `cancel_tunnel` on that lifeline, and delete pending order. |
-| `relayed_tunnel_failed` | lifeline worker or Primary → origin | `{ ticket, reason }` | Fail the session with `reason` (Edge reason verbatim, or `edge_disconnected`, `edge_saturated`, `target_worker_dead`). |
-| `relayed_tunnel_socket` | receiving → origin worker | `{ ticket, head, headers }` + socket | Socket migration. |
-| `relayed_tunnel_handoff` | origin → lifeline worker | `{ ticket }` | Delete the pending order. |
-| `close_lifeline` | any → lifeline worker | `{ edgeId, reason }` | Close a lifeline (`superseded`, `token_rolled`, `edge_deleted`). |
-| `sever_sessions` | any → all workers | `{ tunnelId?, edgeId?, reason }` | Revocation broadcast (see [Session Registry](tunnel-handlers.md#session-registry)). |
+| `type`                   | Route                               | Payload                                                             | Purpose                                                                                                                |
+| :----------------------- | :---------------------------------- | :------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------- |
+| `relayed_tunnel_request` | origin → lifeline worker            | `{ ticket, reqId, edgeId, tunnel, client, deadline, originWorker }` | Ask the lifeline worker to send `connect_tunnel`. `deadline` is absolute epoch ms.                                     |
+| `relayed_tunnel_cancel`  | origin or Primary → lifeline worker | `{ ticket, reason }`                                                | Look up `edgeId` in `pendingOrders`, send `cancel_tunnel` on that lifeline, and delete pending order.                  |
+| `relayed_tunnel_failed`  | lifeline worker or Primary → origin | `{ ticket, reason }`                                                | Fail the session with `reason` (Edge reason verbatim, or `edge_disconnected`, `edge_saturated`, `target_worker_dead`). |
+| `relayed_tunnel_socket`  | receiving → origin worker           | `{ ticket, head, headers }` + socket                                | Socket migration.                                                                                                      |
+| `relayed_tunnel_handoff` | origin → lifeline worker            | `{ ticket }`                                                        | Delete the pending order.                                                                                              |
+| `close_lifeline`         | any → lifeline worker               | `{ edgeId, reason }`                                                | Close a lifeline (`superseded`, `token_rolled`, `edge_deleted`).                                                       |
+| `sever_sessions`         | any → all workers                   | `{ tunnelId?, edgeId?, reason }`                                    | Revocation broadcast (see [Session Registry](tunnel-handlers.md#session-registry)).                                    |
 
 ### Dead Workers
 
 When the Primary cannot deliver a message because the target worker is gone:
 
-* A migrating socket is destroyed.
-* If the origin worker died: Primary sends `relayed_tunnel_cancel { ticket, reason: "target_worker_dead" }` to the lifeline worker, which writes `cancel_tunnel` to the Edge and cleans up the pending order.
-* If the lifeline worker died: Primary sends `relayed_tunnel_failed { ticket, reason: "target_worker_dead" }` to the origin worker, which closes the runtime socket.
+- A migrating socket is destroyed.
+- If the origin worker died: Primary sends `relayed_tunnel_cancel { ticket, reason: "target_worker_dead" }` to the lifeline worker, which writes `cancel_tunnel` to the Edge and cleans up the pending order.
+- If the lifeline worker died: Primary sends `relayed_tunnel_failed { ticket, reason: "target_worker_dead" }` to the origin worker, which closes the runtime socket.
 
 When a worker exits, the Primary forks a replacement and cleans up that worker's presence:
 
 ```typescript
 cluster.on("exit", async (worker) => {
-  const identity = `${bootId}:${worker.id}`;
-  const edgeIds = await kv.smembers(`worker:${identity}:edges`);
-  for (const edgeId of edgeIds) {
-    await kv.delIfEquals(`edge:${edgeId}:worker`, identity); // never removes a newer mapping
-  }
-  await kv.del(`worker:${identity}:edges`);
+    const identity = `${bootId}:${worker.id}`;
+    const edgeIds = await kv.smembers(`worker:${identity}:edges`);
+    for (const edgeId of edgeIds) {
+        await kv.delIfEquals(`edge:${edgeId}:worker`, identity); // never removes a newer mapping
+    }
+    await kv.del(`worker:${identity}:edges`);
 });
 ```
 
@@ -197,13 +199,26 @@ On Hub shutdown, lifelines are closed with `1001 hub_shutdown`; Edges reconnect 
 
 ```typescript
 /** Resolves with the relayed duplex at handoff; rejects with a taxonomy reason. */
-export function acquireRelayedStream(tunnel: Tunnel, req: IncomingMessageWithDeny, deadline: number): Promise<Duplex>;
+export function acquireRelayedStream(
+    tunnel: Tunnel,
+    req: IncomingMessageWithDeny,
+    deadline: number
+): Promise<Duplex>;
 
 /** Handles an upgrade presenting an edge token (after resolution). */
-export function wardenLifeline(req: IncomingMessageWithDeny, socket: Duplex, head: Buffer, edge: Edge): Promise<void>;
+export function wardenLifeline(
+    req: IncomingMessageWithDeny,
+    socket: Duplex,
+    head: Buffer,
+    edge: Edge
+): Promise<void>;
 
 /** Handles an upgrade presenting a ticket. */
-export function wardenRelayedSocket(req: IncomingMessageWithDeny, socket: Duplex, head: Buffer): Promise<void>;
+export function wardenRelayedSocket(
+    req: IncomingMessageWithDeny,
+    socket: Duplex,
+    head: Buffer
+): Promise<void>;
 ```
 
 Settings used by the Warden (`CONNECT_TIMEOUT`, `HEARTBEAT_*`, `MAX_PENDING_ORDERS`, `MAX_LIFELINE_BUFFER`, `WORKERS`, `REDIS_URL`) are described in the [Configuration Reference](../2-nodes/configuration.md).

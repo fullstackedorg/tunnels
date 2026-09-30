@@ -16,9 +16,9 @@ The WebSocket server has no listening port of its own. It completes upgrades han
 
 ## Configuration
 
-* `noServer: true`: upgrades come from the HTTP server.
-* `perMessageDeflate: false`: tunneled bytes are often already compressed or encrypted; compression would cost CPU and memory for no gain.
-* `maxPayload`: bounded (default of the `ws` library) so a single frame cannot exhaust memory.
+- `noServer: true`: upgrades come from the HTTP server.
+- `perMessageDeflate: false`: tunneled bytes are often already compressed or encrypted; compression would cost CPU and memory for no gain.
+- `maxPayload`: bounded (default of the `ws` library) so a single frame cannot exhaust memory.
 
 ## Duplex Adapter
 
@@ -28,12 +28,12 @@ import { createWebSocketStream } from "ws";
 const duplex = createWebSocketStream(ws, { allowHalfOpen: false });
 ```
 
-| Stream side | WebSocket side | Behavior |
-| :--- | :--- | :--- |
-| `duplex.write(chunk)` | binary frame | Returns `false` when the socket buffer is full; writers wait for `drain`. |
-| `data` event | binary frame received | Payload as `Buffer`. |
-| `duplex.end()` | close handshake | Used only through the teardown routine, which sends the close code and reason first. |
-| `duplex.destroy()` | socket destroyed | Called after the close frame's flush window. |
+| Stream side           | WebSocket side        | Behavior                                                                             |
+| :-------------------- | :-------------------- | :----------------------------------------------------------------------------------- |
+| `duplex.write(chunk)` | binary frame          | Returns `false` when the socket buffer is full; writers wait for `drain`.            |
+| `data` event          | binary frame received | Payload as `Buffer`.                                                                 |
+| `duplex.end()`        | close handshake       | Used only through the teardown routine, which sends the close code and reason first. |
+| `duplex.destroy()`    | socket destroyed      | Called after the close frame's flush window.                                         |
 
 Because `allowHalfOpen` is `false`, the end of either direction ends both. Half-close is not supported (see [Symmetrical Teardown](../1-concepts/protocol-spec.md#symmetrical-teardown-no-half-close)).
 

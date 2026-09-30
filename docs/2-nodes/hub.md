@@ -58,54 +58,60 @@ Put a TLS-terminating reverse proxy in front (see [Deployment Requirement: TLS](
 
 ```yaml
 services:
-  hub:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      PORT: 3000
-      WORKERS: 4
-      POSTGRES_URL: "postgresql://postgres:secret@postgres:5432/tunnels"
-      REDIS_URL: "redis://:secret@redis:6379"
-      TRUSTED_PROXIES: "172.16.0.0/12"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/edges?limit=1').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    hub:
+        build:
+            context: ./server
+            dockerfile: Dockerfile
+        ports:
+            - "3000:3000"
+        environment:
+            PORT: 3000
+            WORKERS: 4
+            POSTGRES_URL: "postgresql://postgres:secret@postgres:5432/tunnels"
+            REDIS_URL: "redis://:secret@redis:6379"
+            TRUSTED_PROXIES: "172.16.0.0/12"
+        depends_on:
+            postgres:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:3000/edges?limit=1').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 3
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: secret
-      POSTGRES_DB: tunnels
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+    postgres:
+        image: postgres:16-alpine
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: secret
+            POSTGRES_DB: tunnels
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
 
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--requirepass", "secret"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "secret", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+    redis:
+        image: redis:7-alpine
+        command: ["redis-server", "--requirepass", "secret"]
+        healthcheck:
+            test: ["CMD", "redis-cli", "-a", "secret", "ping"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
 
 volumes:
-  pgdata:
+    pgdata:
 ```
 
 If a `rest_access` hook requires authentication, adjust the health check accordingly (or register a public route for it).
