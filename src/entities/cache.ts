@@ -59,7 +59,6 @@ export async function resolveToken(token: string): Promise<ResolveTokenResult | 
 
         // 4. Populate positive cache
         await kv.setNX(`entity:${entityType}:${token}`, item, entityCacheTtl);
-        await kv.setNX(`entity:${entityType}:${item.id}`, item, entityCacheTtl);
 
         return { type: entityType, entity: item as any };
     } catch (err) {
@@ -76,7 +75,6 @@ export async function cacheUpdateEntity(
 ): Promise<void> {
     try {
         await kv.set(`entity:${entityType}:${entity.token}`, entity, entityCacheTtl);
-        await kv.set(`entity:${entityType}:${entity.id}`, entity, entityCacheTtl);
     } catch {
         // fail-open on cache updates, storage is source of truth
     }
@@ -89,7 +87,6 @@ export async function cacheRollToken(
 ): Promise<void> {
     try {
         await kv.set(`entity:${entityType}:${entity.token}`, entity, entityCacheTtl);
-        await kv.set(`entity:${entityType}:${entity.id}`, entity, entityCacheTtl);
         await kv.del(`entity:${entityType}:${oldToken}`);
         await kv.set(`entity:miss:${oldToken}`, 1, negativeCacheTtl);
     } catch {
@@ -97,15 +94,9 @@ export async function cacheRollToken(
     }
 }
 
-export async function cacheDeleteEntity(
-    entityType: EntityName,
-    token: string,
-    id?: string
-): Promise<void> {
+export async function cacheDeleteEntity(entityType: EntityName, token: string): Promise<void> {
     try {
-        const keysToDelete = [`entity:${entityType}:${token}`];
-        if (id) keysToDelete.push(`entity:${entityType}:${id}`);
-        await kv.del(keysToDelete);
+        await kv.del(`entity:${entityType}:${token}`);
         await kv.set(`entity:miss:${token}`, 1, negativeCacheTtl);
     } catch {
         // fail-open

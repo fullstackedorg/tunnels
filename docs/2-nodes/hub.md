@@ -60,7 +60,7 @@ Put a TLS-terminating reverse proxy in front (see [Deployment Requirement: TLS](
 services:
     hub:
         build:
-            context: ./server
+            context: .
             dockerfile: Dockerfile
         ports:
             - "3000:3000"
@@ -142,4 +142,4 @@ On `SIGINT` / `SIGTERM`:
 5. **Close providers**: `storage.close()` (flushes the filesystem store or ends the PostgreSQL pool) and `kv.close()`.
 6. **Exit**: code `0` if every session ended on its own, `1` if any had to be force-closed.
 
-In clustered mode the Primary forwards the signal to every worker and exits after all workers have exited.
+In clustered mode the Primary forwards the signal to every worker, each worker runs the steps above, and the Primary exits after all workers have exited: with code `1` if any worker exited with a non-zero code, otherwise `0`. If workers are still alive `SHUTDOWN_TIMEOUT + 5s` after the signal, the Primary exits with code `1`.

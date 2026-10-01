@@ -30,17 +30,19 @@ All endpoints accept and return `application/json`. Error bodies are always `{"e
 
 ### Status Codes
 
-| Status                      | When                                                                                                                                      | Body                                        |
-| :-------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------ |
-| `200 OK`                    | Successful read, list, update, or token roll.                                                                                             | Entity or array                             |
-| `201 Created`               | Successful create.                                                                                                                        | Entity including generated `id` and `token` |
-| `204 No Content`            | Successful delete.                                                                                                                        | Empty                                       |
-| `400 Bad Request`           | Malformed JSON, invalid field values, invalid UUID in the path, unknown `edgeId`, or a request that supplies `id`, `token`, or `version`. | `{"error": "...", "fields": {...}}`         |
-| `403 Forbidden`             | Denied by a hook (`req.deny()`).                                                                                                          | `{"error":"Denied"}`                        |
-| `404 Not Found`             | Unknown route, or no entity with that id **within the caller's scope**.                                                                   | `{"error":"Not Found"}`                     |
-| `429 Too Many Requests`     | Rate limited by a hook.                                                                                                                   | `{"error":"Too Many Requests"}`             |
-| `500 Internal Server Error` | Unhandled error, or a gating/scope/post-query hook threw or timed out.                                                                    | `{"error":"Internal Server Error"}`         |
-| `503 Service Unavailable`   | Storage or KV unavailable.                                                                                                                | `{"error":"Service Unavailable"}`           |
+| Status                      | When                                                                                                                                                                     | Body                                        |
+| :-------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------ |
+| `200 OK`                    | Successful read, list, update, or token roll.                                                                                                                            | Entity or array                             |
+| `201 Created`               | Successful create.                                                                                                                                                       | Entity including generated `id` and `token` |
+| `204 No Content`            | Successful delete.                                                                                                                                                       | Empty                                       |
+| `400 Bad Request`           | Malformed JSON, invalid field values, invalid UUID in the path, unknown `edgeId`, unknown filter or sort column, or a request that supplies `id`, `token`, or `version`. | `{"error": "...", "fields": {...}}`         |
+| `403 Forbidden`             | Denied by a hook (`req.deny()`).                                                                                                                                         | `{"error":"Denied"}`                        |
+| `404 Not Found`             | Unknown route, or no entity with that id **within the caller's scope**.                                                                                                  | `{"error":"Not Found"}`                     |
+| `409 Conflict`              | A generated token collided with an existing one (see [Uniqueness](storage-layer.md#uniqueness)). Retrying succeeds.                                                      | `{"error":"Conflict"}`                      |
+| `413 Payload Too Large`     | Request body larger than 1 MiB.                                                                                                                                          | `{"error":"Payload Too Large"}`             |
+| `429 Too Many Requests`     | Rate limited by a hook.                                                                                                                                                  | `{"error":"Too Many Requests"}`             |
+| `500 Internal Server Error` | Unhandled error, a gating/scope/post-query hook threw or timed out, or a pre-mutation hook introduced an invalid value. Details are logged, never returned.              | `{"error":"Internal Server Error"}`         |
+| `503 Service Unavailable`   | Storage or KV unavailable.                                                                                                                                               | `{"error":"Service Unavailable"}`           |
 
 ### Validation
 
@@ -64,12 +66,12 @@ Payloads are validated before the pre-mutation hook and **re-validated after it*
 
 `GET /tunnels` and `GET /edges` accept:
 
-| Parameter                      | Default  | Description                                                                                                                                     |
-| :----------------------------- | :------- | :---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `limit`                        | `100`    | Maximum rows, capped at `1000`.                                                                                                                 |
-| `offset`                       | `0`      | Rows to skip.                                                                                                                                   |
-| `orderBy`                      | `id:asc` | `<column>:(asc\|desc)`.                                                                                                                         |
-| any column or `metadata.<key>` |          | Equality filter. Values are converted to the column's type (e.g. `internalPort=5432` becomes an integer); an unconvertible value returns `400`. |
+| Parameter                      | Default  | Description                                                                                                                                                                          |
+| :----------------------------- | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limit`                        | `100`    | Maximum rows, capped at `1000`.                                                                                                                                                      |
+| `offset`                       | `0`      | Rows to skip.                                                                                                                                                                        |
+| `orderBy`                      | `id:asc` | `<column>:(asc\|desc)`. An unknown column returns `400`.                                                                                                                             |
+| any column or `metadata.<key>` |          | Equality filter. Values are converted to the column's type (e.g. `internalPort=5432` becomes an integer); an unconvertible value or a column the entity does not have returns `400`. |
 
 The total number of matching rows (within scope) is returned in the `X-Total-Count` header.
 

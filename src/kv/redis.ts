@@ -1,5 +1,6 @@
 import { createClient, type RedisClientType } from "redis";
 import type { KVProvider } from "./interface.ts";
+import { logger } from "../utils/logger.ts";
 
 function serializeValue(val: any): string {
     if (typeof val === "string") {
@@ -20,16 +21,41 @@ function deserializeValue<T>(raw: string | null): T | null {
 export class RedisKVProvider implements KVProvider {
     private client: RedisClientType;
     private isConnected = false;
+    private connecting: Promise<void> | null = null;
 
     constructor(redisUrl: string) {
-        this.client = createClient({ url: redisUrl });
+        this.client = createClient({
+            url: redisUrl,
+            // Fail commands immediately while disconnected instead of queueing them forever.
+            disableOfflineQueue: true,
+            socket: {
+                connectTimeout: 5000,
+                // The first connection fails fast (the caller gets an error and retries on its
+                // next command); an established connection reconnects in the background.
+                reconnectStrategy: (retries: number, cause: Error) =>
+                    this.isConnected ? Math.min(retries * 100, 3000) : cause,
+            },
+        });
+        // Without a listener, a connection error would crash the process; failed commands
+        // reject instead and surface as 503 / stream_error.
+        this.client.on("error", (err) => {
+            logger.warn("KV", `Redis error: ${err?.message}`);
+        });
     }
 
     private async ensureConnected(): Promise<void> {
-        if (!this.isConnected) {
-            await this.client.connect();
-            this.isConnected = true;
+        if (this.isConnected) return;
+        if (!this.connecting) {
+            this.connecting = this.client
+                .connect()
+                .then(() => {
+                    this.isConnected = true;
+                })
+                .finally(() => {
+                    this.connecting = null;
+                });
         }
+        await this.connecting;
     }
 
     async get<T = any>(key: string): Promise<T | null> {

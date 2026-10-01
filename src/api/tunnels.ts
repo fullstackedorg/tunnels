@@ -7,13 +7,14 @@ import { validateEntityPayload } from "../entities/validation.ts";
 import { cacheUpdateEntity, cacheRollToken, cacheDeleteEntity } from "../entities/cache.ts";
 import { runGatingHook, runPostQueryHook, runAwaitedHook } from "../utils/hooks.ts";
 import { severSessions } from "../tunnels/registry.ts";
+import { isConflictError } from "../utils/errors.ts";
 import { readJsonBody, parseQueryParams, sendJson } from "./helpers.ts";
 
 export async function handleTunnelsList(
     req: IncomingMessageWithDeny,
     res: ServerResponse
 ): Promise<void> {
-    const { query, error } = parseQueryParams(req.url ?? "/tunnels");
+    const { query, error } = parseQueryParams(req.url ?? "/tunnels", "tunnel");
     if (error) {
         sendJson(res, 400, { error });
         return;
@@ -52,8 +53,7 @@ export async function handleTunnelCreate(
 
     const v2 = validateEntityPayload("tunnel", payload, false);
     if (!v2.valid) {
-        sendJson(res, 500, { error: "Hook introduced invalid fields", fields: v2.fields });
-        return;
+        throw new Error(`create hook introduced invalid fields: ${JSON.stringify(v2.fields)}`);
     }
 
     if (payload.edgeId) {
@@ -76,11 +76,8 @@ export async function handleTunnelCreate(
             });
         });
     } catch (err: any) {
-        if (err?.message?.includes("Conflict")) {
-            sendJson(res, 409, { error: err.message });
-            return;
-        }
-        sendJson(res, 500, { error: err?.message || "Internal Server Error" });
+        if (!isConflictError(err)) throw err;
+        sendJson(res, 409, { error: "Conflict" });
         return;
     }
 
@@ -94,7 +91,11 @@ export async function handleTunnelGet(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/tunnels/${id}`);
+    const { query, error } = parseQueryParams(req.url ?? `/tunnels/${id}`, "tunnel");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_tunnel", req, query, "read");
     if (!scopePassed || req.denied) return;
 
@@ -115,7 +116,11 @@ export async function handleTunnelUpdate(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/tunnels/${id}`);
+    const { query, error } = parseQueryParams(req.url ?? `/tunnels/${id}`, "tunnel");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_tunnel", req, query, "update");
     if (!scopePassed || req.denied) return;
 
@@ -165,11 +170,8 @@ export async function handleTunnelUpdate(
             sendJson(res, 400, { error: err.message });
             return;
         }
-        if (err.message?.includes("Conflict")) {
-            sendJson(res, 409, { error: err.message });
-            return;
-        }
-        sendJson(res, 500, { error: err.message });
+        if (!isConflictError(err)) throw err;
+        sendJson(res, 409, { error: "Conflict" });
         return;
     }
 
@@ -200,7 +202,11 @@ export async function handleTunnelDelete(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/tunnels/${id}`);
+    const { query, error } = parseQueryParams(req.url ?? `/tunnels/${id}`, "tunnel");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_tunnel", req, query, "delete");
     if (!scopePassed || req.denied) return;
 
@@ -222,7 +228,7 @@ export async function handleTunnelDelete(
     }
 
     const item = deleted as Tunnel;
-    await cacheDeleteEntity("tunnel", item.token, item.id);
+    await cacheDeleteEntity("tunnel", item.token);
     await severSessions({ tunnelId: id }, "tunnel_deleted");
     await runAwaitedHook("delete_tunnel_done", req, item);
 
@@ -235,7 +241,11 @@ export async function handleTunnelRollToken(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/tunnels/${id}/roll-token`);
+    const { query, error } = parseQueryParams(req.url ?? `/tunnels/${id}/roll-token`, "tunnel");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_tunnel", req, query, "roll_token");
     if (!scopePassed || req.denied) return;
 

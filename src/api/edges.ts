@@ -9,13 +9,14 @@ import { runGatingHook, runPostQueryHook, runAwaitedHook } from "../utils/hooks.
 import { kv } from "../kv/index.ts";
 import { closeLifeline } from "../warden/index.ts";
 import { severSessions } from "../tunnels/registry.ts";
+import { isConflictError } from "../utils/errors.ts";
 import { readJsonBody, parseQueryParams, sendJson, enrichEdgePresence } from "./helpers.ts";
 
 export async function handleEdgesList(
     req: IncomingMessageWithDeny,
     res: ServerResponse
 ): Promise<void> {
-    const { query, error } = parseQueryParams(req.url ?? "/edges");
+    const { query, error } = parseQueryParams(req.url ?? "/edges", "edge");
     if (error) {
         sendJson(res, 400, { error });
         return;
@@ -56,8 +57,7 @@ export async function handleEdgeCreate(
 
     const v2 = validateEntityPayload("edge", payload, false);
     if (!v2.valid) {
-        sendJson(res, 500, { error: "Hook introduced invalid fields", fields: v2.fields });
-        return;
+        throw new Error(`create hook introduced invalid fields: ${JSON.stringify(v2.fields)}`);
     }
 
     const token = generateToken("edg_");
@@ -72,11 +72,8 @@ export async function handleEdgeCreate(
             });
         });
     } catch (err: any) {
-        if (err?.message?.includes("Conflict")) {
-            sendJson(res, 409, { error: err.message });
-            return;
-        }
-        sendJson(res, 500, { error: err?.message || "Internal Server Error" });
+        if (!isConflictError(err)) throw err;
+        sendJson(res, 409, { error: "Conflict" });
         return;
     }
 
@@ -90,7 +87,11 @@ export async function handleEdgeGet(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/edges/${id}`);
+    const { query, error } = parseQueryParams(req.url ?? `/edges/${id}`, "edge");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_edge", req, query, "read");
     if (!scopePassed || req.denied) return;
 
@@ -112,7 +113,11 @@ export async function handleEdgeUpdate(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/edges/${id}`);
+    const { query, error } = parseQueryParams(req.url ?? `/edges/${id}`, "edge");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_edge", req, query, "update");
     if (!scopePassed || req.denied) return;
 
@@ -147,11 +152,8 @@ export async function handleEdgeUpdate(
             updated = (await tx.update("edge", id, updates, query)) as Edge;
         });
     } catch (err: any) {
-        if (err.message?.includes("Conflict")) {
-            sendJson(res, 409, { error: err.message });
-            return;
-        }
-        sendJson(res, 500, { error: err.message });
+        if (!isConflictError(err)) throw err;
+        sendJson(res, 409, { error: "Conflict" });
         return;
     }
 
@@ -171,7 +173,11 @@ export async function handleEdgeDelete(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/edges/${id}`);
+    const { query, error } = parseQueryParams(req.url ?? `/edges/${id}`, "edge");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_edge", req, query, "delete");
     if (!scopePassed || req.denied) return;
 
@@ -201,11 +207,10 @@ export async function handleEdgeDelete(
         });
     } catch (err: any) {
         if (err.message === "CHILD_HOOK_DENIED") {
-            if (!req.denied) req.deny(403, "Forbidden");
+            if (!req.denied) req.deny();
             return;
         }
-        sendJson(res, 500, { error: err.message });
-        return;
+        throw err;
     }
 
     if (req.denied) return;
@@ -215,13 +220,14 @@ export async function handleEdgeDelete(
     }
 
     const edge = deletedEdge as Edge;
-    await cacheDeleteEntity("edge", edge.token, edge.id);
+    await cacheDeleteEntity("edge", edge.token);
     for (const child of childTunnels) {
-        await cacheDeleteEntity("tunnel", child.token, child.id);
+        await cacheDeleteEntity("tunnel", child.token);
     }
 
-    await kv.del([`edge:${edge.id}:worker`, `edge:${edge.id}:last_seen`]);
+    // closeLifeline reads edge:<id>:worker to reach the lifeline worker, so evict presence after.
     await closeLifeline(edge.id, "edge_deleted");
+    await kv.del([`edge:${edge.id}:worker`, `edge:${edge.id}:last_seen`]);
     await severSessions({ edgeId: edge.id }, "edge_deleted");
 
     for (const child of childTunnels) {
@@ -238,7 +244,11 @@ export async function handleEdgeRollToken(
     res: ServerResponse,
     id: string
 ): Promise<void> {
-    const { query } = parseQueryParams(req.url ?? `/edges/${id}/roll-token`);
+    const { query, error } = parseQueryParams(req.url ?? `/edges/${id}/roll-token`, "edge");
+    if (error) {
+        sendJson(res, 400, { error });
+        return;
+    }
     const scopePassed = await runGatingHook("scope_edge", req, query, "roll_token");
     if (!scopePassed || req.denied) return;
 

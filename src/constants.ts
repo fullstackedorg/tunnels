@@ -56,6 +56,34 @@ export type Reason =
     | "hub_shutdown"
     | "edge_shutdown";
 
+const REASONS = new Set<string>([
+    "client_close",
+    "target_close",
+    "client_aborted",
+    "target_unreachable",
+    "connect_timeout",
+    "relay_dial_failed",
+    "edge_disconnected",
+    "edge_saturated",
+    "target_worker_dead",
+    "hook_denied",
+    "hook_error",
+    "stream_error",
+    "heartbeat_timeout",
+    "token_rolled",
+    "tunnel_deleted",
+    "tunnel_updated",
+    "edge_deleted",
+    "superseded",
+    "hub_shutdown",
+    "edge_shutdown",
+]);
+
+/** True when value is a string from the close reason taxonomy. */
+export function isReason(value: unknown): value is Reason {
+    return typeof value === "string" && REASONS.has(value);
+}
+
 export const DEFAULT_PORT = 3000;
 export const DEFAULT_HOST = "0.0.0.0";
 export const DEFAULT_HEARTBEAT_INTERVAL = 10;

@@ -2,11 +2,20 @@ import cluster from "node:cluster";
 import crypto from "node:crypto";
 import type { AppConfig } from "../utils/config.ts";
 import { logger } from "../utils/logger.ts";
-import { kv } from "../kv/index.ts";
+import { initKV, type KVProvider } from "../kv/index.ts";
 
 export interface ClusterState {
     bootId: string;
     isShuttingDown: boolean;
+}
+
+/** Removes the presence a dead worker still owns; never touches newer mappings. */
+export async function cleanupWorkerPresence(kv: KVProvider, identity: string): Promise<void> {
+    const edgeIds = await kv.smembers(`worker:${identity}:edges`);
+    for (const edgeId of edgeIds) {
+        await kv.delIfEquals(`edge:${edgeId}:worker`, identity);
+    }
+    await kv.del(`worker:${identity}:edges`);
 }
 
 export function startHubPrimary(
@@ -22,6 +31,10 @@ export function startHubPrimary(
         bootId,
         isShuttingDown: false,
     };
+    logger.setWorkerIdentity(`${bootId}:primary`);
+    // Same provider as the workers (Redis or shared file KV) so cleanup sees their presence.
+    const kv = initKV(config);
+    let exitCode = 0;
 
     cluster.setupPrimary({
         serialization: "advanced",
@@ -95,21 +108,21 @@ export function startHubPrimary(
     const checkAllExited = () => {
         const alive = Object.values(cluster.workers || {}).filter((w) => w && !w.isDead());
         if (alive.length === 0) {
-            process.exit(0);
+            process.exit(exitCode);
         }
     };
 
     cluster.on("exit", async (worker, code, signal) => {
         const identity = `${bootId}:${worker.id}`;
-        logger.warn("Hub", `Worker ${identity} exited (code: ${code}, signal: ${signal})`);
+        if (state.isShuttingDown) {
+            if (code !== 0) exitCode = 1;
+            logger.info("Hub", `Worker ${identity} exited (code: ${code}, signal: ${signal})`);
+        } else {
+            logger.warn("Hub", `Worker ${identity} exited (code: ${code}, signal: ${signal})`);
+        }
 
-        // Clean up presence in KV
         try {
-            const edgeIds = await kv.smembers(`worker:${identity}:edges`);
-            for (const edgeId of edgeIds) {
-                await kv.delIfEquals(`edge:${edgeId}:worker`, identity);
-            }
-            await kv.del(`worker:${identity}:edges`);
+            await cleanupWorkerPresence(kv, identity);
         } catch (err: any) {
             logger.warn("Hub", `Failed to clean presence for worker ${identity}: ${err?.message}`);
         }
@@ -133,9 +146,13 @@ export function startHubPrimary(
             }
         }
 
-        const forceExitTimer = setTimeout(() => {
-            process.exit(0);
-        }, 5000);
+        const forceExitTimer = setTimeout(
+            () => {
+                logger.error("Hub", "Workers did not exit in time; exiting");
+                process.exit(1);
+            },
+            (config.shutdownTimeout + 5) * 1000
+        );
         forceExitTimer.unref();
 
         checkAllExited();

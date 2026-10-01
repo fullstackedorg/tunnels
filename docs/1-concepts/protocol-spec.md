@@ -169,13 +169,13 @@ Sent only **before handoff**:
 }
 ```
 
-| `reason`             | Condition                                                         |
-| :------------------- | :---------------------------------------------------------------- |
-| `hook_denied`        | `edge_tunnel_request` called `context.deny()`.                    |
-| `hook_error`         | `edge_tunnel_request` threw or exceeded `HOOK_TIMEOUT`.           |
-| `target_unreachable` | Target dial failed (`ECONNREFUSED`, `EHOSTUNREACH`, DNS failure). |
-| `connect_timeout`    | `connectTimeoutMs` expired before both dials completed.           |
-| `relay_dial_failed`  | The relayed socket dial to the Hub failed or was rejected.        |
+| `reason`             | Condition                                                                        |
+| :------------------- | :------------------------------------------------------------------------------- |
+| `hook_denied`        | `edge_tunnel_request` called `context.deny()`.                                   |
+| `hook_error`         | `edge_tunnel_request` threw or exceeded `HOOK_TIMEOUT`.                          |
+| `target_unreachable` | Target dial failed (`ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, DNS failure). |
+| `connect_timeout`    | `connectTimeoutMs` expired before both dials completed.                          |
+| `relay_dial_failed`  | The relayed socket dial to the Hub failed or was rejected.                       |
 
 On receipt the lifeline worker deletes the ticket from KV, clears the pending order, and fails the session with that reason, forwarded verbatim.
 
@@ -192,7 +192,7 @@ After handoff, the relayed socket is the channel: if the target dial then fails 
 }
 ```
 
-Sent when a session is abandoned before handoff. `reason` is `client_aborted` (the runtime disconnected) or `connect_timeout` (the Hub's deadline passed). The Edge destroys both in-flight dials (`socket.destroy()`), discards the order, and emits `edge_tunnel_end(context, tunnel, reason)` with that reason.
+Sent when a session is abandoned before handoff. `reason` is `client_aborted` (the runtime disconnected), `connect_timeout` (the Hub's deadline passed), `hub_shutdown` (the Hub is shutting down), or `target_worker_dead` (the origin worker died, clustered mode). The Edge destroys both in-flight dials (`socket.destroy()`), discards the order, and emits `edge_tunnel_end(context, tunnel, reason)` with that reason.
 
 ### D. Relayed Failure Reason Sources
 
@@ -207,12 +207,14 @@ Every failed relayed session reaches the runtime and `tunnel_end` with exactly o
 | Hub                  | Lifeline worker exceeded `MAX_PENDING_ORDERS` / `MAX_LIFELINE_BUFFER` | `edge_saturated`                                          |
 | Hub (clustered)      | Origin or lifeline worker died before handoff                         | `target_worker_dead`                                      |
 | Hub                  | Runtime disconnected before handoff                                   | `client_aborted` (hooks only; no close frame can be sent) |
+| Hub                  | KV unavailable while creating the ticket                              | `stream_error`                                            |
+| Hub                  | Hub shutting down before handoff                                      | `hub_shutdown`                                            |
 
 ### E. Saturation
 
-A pending order is acknowledged by handoff or by `connect_tunnel_failed` (there is no separate ack). The lifeline worker refuses to dispatch a new order when the Edge already has `MAX_PENDING_ORDERS` pending orders or the lifeline's `bufferedAmount` exceeds `MAX_LIFELINE_BUFFER`:
+A pending order is acknowledged by handoff or by `connect_tunnel_failed` (there is no separate ack). The lifeline worker refuses to dispatch a new order when the Edge already has `MAX_PENDING_ORDERS` pending orders or the lifeline's `bufferedAmount` exceeds `MAX_LIFELINE_BUFFER`.
 
-Across all modes (single-process and clustered), the Hub accepts the runtime upgrade (`101 Switching Protocols`), and the lifeline worker immediately terminates the session with close code `1013` and reason `edge_saturated`.
+Saturation is only known to the lifeline worker, so in every mode (single-process and clustered) it is detected after the runtime upgrade was accepted (`101 Switching Protocols`) and the session started (`tunnel_start`): the session is closed with code `1013` and reason `edge_saturated`, and `tunnel_end` reports `edge_saturated`.
 
 ---
 
@@ -222,7 +224,7 @@ The bidirectional heartbeat runs on **every** WebSocket connection: lifelines, r
 
 - Both ends send a WebSocket `ping` every `HEARTBEAT_INTERVAL` (default 10s, shorter than the idle timeout of common proxies and load balancers) and answer every `ping` with a `pong`.
 - Any frame received (pong, ping, text, or binary) refreshes the peer's `lastReceived` timestamp.
-- A connection is dead when `now - lastReceived >= HEARTBEAT_TIMEOUT` (default 30s). It is terminated with code `1011` and reason `heartbeat_timeout`.
+- A connection is dead when `now - lastReceived >= HEARTBEAT_TIMEOUT` (default 30s). A close frame with code `1011` and reason `heartbeat_timeout` is sent and the underlying socket is destroyed after a 1-second grace period without waiting for the dead peer's close handshake. Local close handling (`lifeline_disconnect`, `tunnel_end`, Edge reconnect) reports `heartbeat_timeout`.
 - `HEARTBEAT_INTERVAL` can be shortened for infrastructure with more aggressive idle timeouts, or lengthened to reduce control traffic. It must stay well below `HEARTBEAT_TIMEOUT`.
 - Heartbeats are driven by one shared sweep timer per process that iterates over open connections; no timer is allocated per connection.
 - Ping and pong are control frames: they never appear in the byte stream delivered to either end.
@@ -285,27 +287,27 @@ Protocols that work: PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1 (includ
 
 ## Close Reason Taxonomy
 
-Only these strings are ever sent in close frames or reported as the primary taxonomy reason in `tunnel_end`, `edge_tunnel_end`, and `lifeline_disconnect`. There are no dynamic messages across the wire (details go to logs), so every reason fits the 123-byte limit of RFC 6455 §5.5 without truncation. For internal telemetry hooks (`tunnel_end` and `edge_tunnel_end`), the underlying Node.js `Error` instance (if any) is passed as an optional fourth parameter (`error?: Error`) for logging and diagnostic inspection.
+Only these strings are ever sent in close frames or reported as the primary taxonomy reason in `tunnel_end`, `edge_tunnel_end`, and `lifeline_disconnect`. A peer that closes with a reason outside the taxonomy (or none) is reported as `client_close` when the peer is on the runtime side (runtime sockets and lifelines on the Hub, relayed sockets on the Edge) and as `target_close` when it is on the target side (relayed sockets on the Hub). There are no dynamic messages across the wire (details go to logs), so every reason fits the 123-byte limit of RFC 6455 §5.5 without truncation. For internal telemetry hooks (`tunnel_end` and `edge_tunnel_end`), the underlying Node.js `Error` instance (if any) is passed as an optional fourth parameter (`error?: Error`) for logging and diagnostic inspection.
 
-| Reason               | Applies to               | Meaning                                                             |
-| :------------------- | :----------------------- | :------------------------------------------------------------------ |
-| `client_close`       | Session                  | The runtime ended the stream cleanly.                               |
-| `target_close`       | Session                  | The target ended the stream cleanly (FIN).                          |
-| `client_aborted`     | Session                  | The runtime disconnected before handoff.                            |
-| `target_unreachable` | Session                  | Target dial refused / host unreachable / DNS failure.               |
-| `connect_timeout`    | Session                  | The deadline passed before the session was established.             |
-| `relay_dial_failed`  | Session                  | The Edge could not open or had rejected its relayed socket.         |
-| `edge_disconnected`  | Session                  | The Edge's lifeline dropped while the order was pending.            |
-| `edge_saturated`     | Session                  | The Edge's lifeline exceeded its pending-order or buffer limit.     |
-| `target_worker_dead` | Session                  | A Hub worker involved in the session died before handoff.           |
-| `hook_denied`        | Session                  | A gating hook on the Edge denied the order.                         |
-| `hook_error`         | Session                  | A gating hook on the Edge threw or timed out.                       |
-| `stream_error`       | Session                  | Network error during active streaming (`ECONNRESET`, `EPIPE`, ...). |
-| `heartbeat_timeout`  | Any WebSocket            | Nothing received from the peer for `HEARTBEAT_TIMEOUT`.             |
-| `token_rolled`       | Session, lifeline        | The tunnel or edge token was rolled; access is revoked immediately. |
-| `tunnel_deleted`     | Session                  | The tunnel was deleted.                                             |
-| `tunnel_updated`     | Session                  | The tunnel's `internalHost`, `internalPort`, or `edgeId` changed.   |
-| `edge_deleted`       | Session, lifeline        | The Edge was deleted.                                               |
-| `superseded`         | Lifeline                 | A newer lifeline for the same Edge replaced this one.               |
-| `hub_shutdown`       | Any WebSocket            | The Hub is shutting down.                                           |
-| `edge_shutdown`      | Relayed socket, lifeline | The Edge daemon is shutting down.                                   |
+| Reason               | Applies to               | Meaning                                                                                                     |
+| :------------------- | :----------------------- | :---------------------------------------------------------------------------------------------------------- |
+| `client_close`       | Session                  | The runtime ended the stream cleanly.                                                                       |
+| `target_close`       | Session                  | The target ended the stream cleanly (FIN).                                                                  |
+| `client_aborted`     | Session                  | The runtime disconnected before handoff.                                                                    |
+| `target_unreachable` | Session                  | Target dial refused / host unreachable / DNS failure.                                                       |
+| `connect_timeout`    | Session                  | The deadline passed before the session was established.                                                     |
+| `relay_dial_failed`  | Session                  | The Edge could not open or had rejected its relayed socket.                                                 |
+| `edge_disconnected`  | Session                  | The Edge's lifeline dropped while the order was pending.                                                    |
+| `edge_saturated`     | Session                  | The Edge's lifeline exceeded its pending-order or buffer limit.                                             |
+| `target_worker_dead` | Session                  | A Hub worker involved in the session died before handoff.                                                   |
+| `hook_denied`        | Session                  | A gating hook on the Edge denied the order.                                                                 |
+| `hook_error`         | Session                  | A gating hook on the Edge threw or timed out.                                                               |
+| `stream_error`       | Session                  | Network error during active streaming (`ECONNRESET`, `EPIPE`, ...), or KV unavailable during relayed setup. |
+| `heartbeat_timeout`  | Any WebSocket            | Nothing received from the peer for `HEARTBEAT_TIMEOUT`.                                                     |
+| `token_rolled`       | Session, lifeline        | The tunnel or edge token was rolled; access is revoked immediately.                                         |
+| `tunnel_deleted`     | Session                  | The tunnel was deleted.                                                                                     |
+| `tunnel_updated`     | Session                  | The tunnel's `internalHost`, `internalPort`, or `edgeId` changed.                                           |
+| `edge_deleted`       | Session, lifeline        | The Edge was deleted.                                                                                       |
+| `superseded`         | Lifeline                 | A newer lifeline for the same Edge replaced this one.                                                       |
+| `hub_shutdown`       | Any WebSocket            | The Hub is shutting down.                                                                                   |
+| `edge_shutdown`      | Relayed socket, lifeline | The Edge daemon is shutting down.                                                                           |

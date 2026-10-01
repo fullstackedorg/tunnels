@@ -49,8 +49,7 @@ All methods are mandatory in every provider.
 | `edge:<edgeId>:worker`                         | Warden       | Worker identity `<bootId>:<workerId>`                                                            | `2 * HEARTBEAT_TIMEOUT` (60s)                                        | Which worker holds the lifeline. Refreshed once per sweep; removed with `delIfEquals`. See [Presence](warden.md#presence).                          |
 | `edge:<edgeId>:last_seen`                      | Warden       | Unix seconds                                                                                     | 30 days rolling TTL                                                  | Last frame received on the lifeline. Refreshed on activity; auto-pruned after 30 days of inactivity.                                                |
 | `worker:<bootId>:<workerId>:edges`             | Warden       | Set of edge ids                                                                                  | none (deleted when the worker exits or via primary IPC sweep)        | Reverse index for cleanup after a worker crash. Maintained with `sadd` / `srem`.                                                                    |
-| `entity:tunnel:<token>`, `entity:edge:<token>` | Entity cache | Entity JSON                                                                                      | `ENTITY_CACHE_TTL`                                                   | Token resolution cache, populated on read or write-through. See [Entity Schemas](entity-schemas.md#write-through-caching).                          |
-| `entity:tunnel:<id>`, `entity:edge:<id>`       | Entity cache | Entity JSON                                                                                      | `ENTITY_CACHE_TTL`                                                   | ID resolution cache for fast lookups.                                                                                                               |
+| `entity:tunnel:<token>`, `entity:edge:<token>` | Entity cache | Entity JSON                                                                                      | `ENTITY_CACHE_TTL`                                                   | Token resolution cache, populated on read or write-through. See [Entity Schemas](entity-schemas.md#invalidation-order-write-through).               |
 | `entity:miss:<token>`                          | Entity cache | `1`                                                                                              | `NEGATIVE_CACHE_TTL` (5s)                                            | Negative cache tombstone for unknown or revoked tokens.                                                                                             |
 
 Keys are namespaced by their first segment (`relayed_request`, `edge`, `worker`, `entity`), so entity-cache keys can never collide with presence keys.
@@ -76,7 +75,7 @@ Keys are namespaced by their first segment (`relayed_request`, `edge`, `worker`,
 ### `FileKVProvider` (Test Only)
 
 - Used when `WORKERS > 1`, `REDIS_URL` is not set, and `ALLOW_FILESYSTEM_MULTIWORKER` is enabled (see [Test Mode](../2-nodes/configuration.md#test-mode-multi-worker-without-postgresql-or-redis), including the startup warning).
-- All processes (Primary and workers) share `DATA_DIR/kv.json`: `{ "<key>": { "value": ..., "expiresAt": <epoch ms or null> } }`, with sets stored as arrays.
+- All processes (Primary and workers) share `DATA_DIR/kv.json`: `{ "entries": { "<key>": { "value": ..., "expiresAt": <epoch ms or null> } }, "sets": { "<key>": ["<member>", ...] } }`.
 - Every operation is a read-modify-write under an exclusive cross-process lock, `DATA_DIR/kv.lock` (created with `O_CREAT | O_EXCL`; a lock older than 5 seconds is broken), and the file is replaced with a temporary-file-and-rename step before the lock is released.
 - Because every operation runs under the lock, `getdel`, `setNX`, `delIfEquals`, and the set operations are atomic across processes, with the same semantics as Redis.
 - Expired entries are treated as missing on read and pruned on the next write.
@@ -88,4 +87,4 @@ If the KV store is unreachable:
 
 - Token resolution fails with `503` (never `401`), so Edges retry instead of entering their revoked state.
 - Ticket creation fails, and the runtime socket is closed with `1011 stream_error`.
-- Presence cannot be refreshed. After `HEARTBEAT_TIMEOUT` other workers consider affected Edges offline (closing new runtime sessions with `1014 edge_disconnected`) until writes succeed again; the lifelines themselves stay open.
+- Presence cannot be refreshed. Once `edge:<id>:worker` expires (`2 * HEARTBEAT_TIMEOUT`), other workers consider affected Edges offline (closing new runtime sessions with `1014 edge_disconnected`) until writes succeed again; the lifelines themselves stay open.

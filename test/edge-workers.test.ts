@@ -12,7 +12,7 @@ import {
     jsonFetch,
 } from "./helpers.ts";
 
-test("edge_workers: clustered edge with 2 workers streams data end-to-end", async () => {
+test("edge-workers: clustered edge with 2 workers streams data end-to-end", async () => {
     const echo = await createTestEchoServer();
     const hubPort = await getAvailablePort();
     const dir = createTempDir("edge-cluster-");

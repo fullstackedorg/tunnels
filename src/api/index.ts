@@ -1,6 +1,8 @@
 import type { ServerResponse } from "node:http";
 import type { IncomingMessageWithDeny } from "../http/deny.ts";
 import { runGatingHook } from "../utils/hooks.ts";
+import { logger } from "../utils/logger.ts";
+import { isUnavailableError } from "../utils/errors.ts";
 import { dispatchBuiltinRoute } from "./routes.ts";
 import { sendJson } from "./helpers.ts";
 
@@ -47,6 +49,22 @@ export async function handleApiRequest(
     req: IncomingMessageWithDeny,
     res: ServerResponse
 ): Promise<void> {
+    try {
+        await routeApiRequest(req, res);
+    } catch (err: any) {
+        const unavailable = isUnavailableError(err);
+        logger.error("API", `${req.method} ${req.url} failed`, { reqId: req.id, error: err });
+        if (res.headersSent) {
+            res.destroy();
+        } else if (unavailable) {
+            sendJson(res, 503, { error: "Service Unavailable" });
+        } else {
+            sendJson(res, 500, { error: "Internal Server Error" });
+        }
+    }
+}
+
+async function routeApiRequest(req: IncomingMessageWithDeny, res: ServerResponse): Promise<void> {
     const accessPassed = await runGatingHook("rest_access", req);
     if (!accessPassed || req.denied) {
         return;

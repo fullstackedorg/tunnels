@@ -6,7 +6,7 @@ import { clearHooks } from "../src/utils/hooks.ts";
 import { decorateRequest } from "../src/http/deny.ts";
 import { getAvailablePort, createTempDir, cleanupTempDir, jsonFetch } from "./helpers.ts";
 
-test("api_roll_and_helpers: roll-token endpoint for edge and tunnel", async () => {
+test("api-roll-and-helpers: roll-token endpoint for edge and tunnel", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("api-roll-");
@@ -70,7 +70,7 @@ test("api_roll_and_helpers: roll-token endpoint for edge and tunnel", async () =
     }
 });
 
-test("api_roll_and_helpers: query param errors and malformed JSON payloads return 400", async () => {
+test("api-roll-and-helpers: query param errors and malformed JSON payloads return 400", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("api-helpers-");
@@ -100,7 +100,7 @@ test("api_roll_and_helpers: query param errors and malformed JSON payloads retur
     }
 });
 
-test("api_roll_and_helpers: deny() with options sets headers and fields", () => {
+test("api-roll-and-helpers: deny() with options sets headers and fields", () => {
     const fakeSocket: any = {
         destroyed: false,
         written: "",

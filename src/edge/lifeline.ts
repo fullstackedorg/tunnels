@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import WebSocket from "ws";
 import type { AppConfig } from "../utils/config.ts";
+import type { Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
 import { registerHeartbeat } from "../ws/heartbeat.ts";
 import { processEdgeOrder, cancelEdgeOrder, drainAndCloseEdgeSessions } from "./orders.ts";
@@ -8,6 +9,8 @@ import { processEdgeOrder, cancelEdgeOrder, drainAndCloseEdgeSessions } from "./
 export interface EdgeLifelineOptions {
     config: AppConfig;
     onOrder?: (order: any) => void;
+    /** Multi-worker Primary: sessions live in workers, so draining is delegated to them. */
+    onRevoked?: (drainTimeoutMs: number, reason: Reason) => void;
 }
 
 export class EdgeLifeline {
@@ -18,10 +21,12 @@ export class EdgeLifeline {
     private isRevoked = false;
     private reconnectTimer: NodeJS.Timeout | null = null;
     private onOrder?: (order: any) => void;
+    private onRevoked?: (drainTimeoutMs: number, reason: Reason) => void;
 
     constructor(options: EdgeLifelineOptions) {
         this.config = options.config;
         this.onOrder = options.onOrder;
+        this.onRevoked = options.onRevoked;
     }
 
     private getToken(): string | undefined {
@@ -56,7 +61,12 @@ export class EdgeLifeline {
     private handleRevocation(): void {
         this.isRevoked = true;
         logger.warn("Edge", "Edge token revoked");
-        drainAndCloseEdgeSessions(this.config.drainTimeout * 1000, "token_rolled").catch(() => {});
+        const drainMs = this.config.drainTimeout * 1000;
+        if (this.onRevoked) {
+            this.onRevoked(drainMs, "token_rolled");
+        } else {
+            drainAndCloseEdgeSessions(drainMs, "token_rolled").catch(() => {});
+        }
         this.scheduleReconnect(this.config.revokedPollInterval * 1000);
     }
 
@@ -86,6 +96,7 @@ export class EdgeLifeline {
         }
 
         const ws = new WebSocket(hubUrl, {
+            perMessageDeflate: false,
             headers: {
                 Authorization: token,
                 version: "0.1.0",

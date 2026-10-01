@@ -62,8 +62,8 @@ export function sortAndPaginate(
     const total = items.length;
     let result = [...items];
 
-    if (query?.orderBy) {
-        const { column, direction } = query.orderBy;
+    {
+        const { column, direction } = query?.orderBy ?? { column: "id", direction: "asc" };
         result.sort((a, b) => {
             const valA = getItemValue(a, column) ?? "";
             const valB = getItemValue(b, column) ?? "";

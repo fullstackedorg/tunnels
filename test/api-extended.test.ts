@@ -14,7 +14,7 @@ import {
     createTestEchoServer,
 } from "./helpers.ts";
 
-test("api_extended: rest_access hook gating denial and error", async () => {
+test("api-extended: rest_access hook gating denial and error", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("rest-access-");
@@ -47,7 +47,7 @@ test("api_extended: rest_access hook gating denial and error", async () => {
     }
 });
 
-test("api_extended: pre-mutation hook invalid field mutation returns 500", async () => {
+test("api-extended: pre-mutation hook invalid field mutation returns 500", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("invalid-mutation-");
@@ -72,7 +72,7 @@ test("api_extended: pre-mutation hook invalid field mutation returns 500", async
         });
 
         assert.equal(res.status, 500);
-        assert.equal(res.data.error, "Hook introduced invalid fields");
+        assert.deepEqual(res.data, { error: "Internal Server Error" });
     } finally {
         clearHooks();
         await hub.close();
@@ -80,7 +80,7 @@ test("api_extended: pre-mutation hook invalid field mutation returns 500", async
     }
 });
 
-test("api_extended: post-query hooks fail-closed with 500 on throw", async () => {
+test("api-extended: post-query hooks fail-closed with 500 on throw", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("post-query-");
@@ -104,7 +104,7 @@ test("api_extended: post-query hooks fail-closed with 500 on throw", async () =>
     }
 });
 
-test("api_extended: edgeId foreign key check returns 400 on create and update", async () => {
+test("api-extended: edgeId foreign key check returns 400 on create and update", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("fk-edge-");
@@ -154,7 +154,7 @@ test("api_extended: edgeId foreign key check returns 400 on create and update", 
     }
 });
 
-test("api_extended: metadata null key deletion and full reset", async () => {
+test("api-extended: metadata null key deletion and full reset", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("meta-reset-");
@@ -200,7 +200,7 @@ test("api_extended: metadata null key deletion and full reset", async () => {
     }
 });
 
-test("api_extended: tunnel update modifying internalPort severs sessions with 1000 tunnel_updated", async () => {
+test("api-extended: tunnel update modifying internalPort severs sessions with 1000 tunnel_updated", async () => {
     clearHooks();
     const echo = await createTestEchoServer();
     const port = await getAvailablePort();
@@ -255,7 +255,7 @@ test("api_extended: tunnel update modifying internalPort severs sessions with 10
     }
 });
 
-test("api_extended: cascading edge delete aborts and rolls back when child delete_tunnel hook denies", async () => {
+test("api-extended: cascading edge delete aborts and rolls back when child delete_tunnel hook denies", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("cascade-rollback-");
@@ -306,7 +306,7 @@ test("api_extended: cascading edge delete aborts and rolls back when child delet
     }
 });
 
-test("api_extended: custom prepended route overrides built-in route", async () => {
+test("api-extended: custom prepended route overrides built-in route", async () => {
     clearHooks();
     clearCustomRoutes();
     const port = await getAvailablePort();

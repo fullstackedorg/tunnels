@@ -9,9 +9,15 @@ import { setHeartbeatConfig } from "../ws/heartbeat.ts";
 import { setHookTimeout } from "../utils/hooks.ts";
 import { setTunnelConnectTimeout } from "../tunnels/index.ts";
 import { setSaturationLimits } from "../warden/orders.ts";
-import { setWardenBootId, setWardenClusterIpcSender, handleWardenIpc } from "../warden/index.ts";
+import {
+    configureWarden,
+    setWardenBootId,
+    setWardenClusterIpcSender,
+    handleWardenIpc,
+} from "../warden/index.ts";
 import { setTunnelRegistryIpcSender, handleSeverSessionsIpc } from "../tunnels/registry.ts";
 import { createHttpServer } from "../http/index.ts";
+import { setCacheTtl } from "../entities/cache.ts";
 import { startHubPrimary } from "./cluster.ts";
 import { performHubShutdown } from "./shutdown.ts";
 
@@ -58,6 +64,8 @@ export async function startHub(config: AppConfig): Promise<HubInstance> {
     setHookTimeout(config.hookTimeout);
     setTunnelConnectTimeout(config.connectTimeout);
     setSaturationLimits(config.maxPendingOrders, config.maxLifelineBuffer);
+    configureWarden(config);
+    setCacheTtl(config.entityCacheTtl, config.negativeCacheTtl);
 
     // Initialize data layer
     initKV(config);
@@ -85,16 +93,21 @@ export async function startHub(config: AppConfig): Promise<HubInstance> {
         bootId,
     };
 
-    if (config.workers === 1) {
-        const shutdown = () => {
-            instance
-                .close()
-                .catch(() => {})
-                .finally(() => process.exit(0));
-        };
-        process.once("SIGINT", shutdown);
-        process.once("SIGTERM", shutdown);
-    }
+    // Single process, or a clustered worker receiving the signal forwarded by the Primary.
+    let shuttingDown = false;
+    const shutdown = () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        instance.close().then(
+            (code) => process.exit(code),
+            (err) => {
+                logger.error("Hub", "Shutdown failed", { error: err });
+                process.exit(1);
+            }
+        );
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
 
     return instance;
 }

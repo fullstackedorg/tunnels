@@ -109,10 +109,10 @@ Consistency in file names allows intuitive codebase exploration and prevents cas
 
 ### Naming Conventions
 
-1. **Directories**: Lowercase kebab-case:
-    - `docs/1-concepts/`, `src/tunnel-handlers/`, `src/key-value-store/`.
+1. **Directories**: Lowercase kebab-case, short subsystem names:
+    - `docs/1-concepts/`, `src/tunnels/`, `src/kv/`, `src/warden/`.
 2. **Source Files**: Lowercase kebab-case:
-    - `filesystem-kv.ts`, `track-bandwidth.ts`, `socket-migration.ts`.
+    - `ws-stream.ts`, `track-bandwidth-hook.ts`, `check-loc.ts`.
 3. **Well-Known Exceptions**:
     - `main.ts`: Executable entry points (`src/main.ts`).
     - `index.ts`: Barrel export files for a directory.
@@ -120,7 +120,7 @@ Consistency in file names allows intuitive codebase exploration and prevents cas
 4. **Interfaces & Types**:
     - Placed in `interface.ts` or `types.ts` within the respective subsystem.
 5. **Test Files**:
-    - Named `<component>.test.ts` (e.g., `storage.test.ts`, `warden.test.ts`, `relay.test.ts`).
+    - Named `<component>.test.ts` in kebab-case (e.g., `storage.test.ts`, `warden.test.ts`, `relayed-tunnel.test.ts`). Shared test utilities live in `test/helpers.ts`.
 
 ---
 

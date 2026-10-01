@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { RedisKVProvider } from "../src/kv/redis.ts";
 
-test("redis_unit: RedisKVProvider full suite with mock client", async () => {
+test("redis-unit: RedisKVProvider full suite with mock client", async () => {
     const provider = new RedisKVProvider("redis://127.0.0.1:6379");
     const store = new Map<string, string>();
     const sets = new Map<string, Set<string>>();
@@ -100,4 +100,38 @@ test("redis_unit: RedisKVProvider full suite with mock client", async () => {
     // 7. close
     await provider.close();
     assert.equal((provider as any).isConnected, false);
+});
+
+test("redis-unit: connection errors are handled and concurrent calls connect once", async () => {
+    const provider = new RedisKVProvider("redis://127.0.0.1:1");
+    assert.ok(
+        (provider as any).client.listenerCount("error") > 0,
+        "an 'error' listener must be registered so a Redis outage cannot crash the process"
+    );
+
+    let connects = 0;
+    (provider as any).client = {
+        connect: async () => {
+            connects++;
+            await new Promise((r) => setTimeout(r, 20));
+        },
+        get: async () => null,
+        quit: async () => {},
+    };
+    await Promise.all([provider.get("a"), provider.get("b"), provider.get("c")]);
+    assert.equal(connects, 1);
+
+    let failing = true;
+    (provider as any).client = {
+        connect: async () => {
+            if (failing) throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
+        },
+        get: async () => "1",
+        quit: async () => {},
+    };
+    (provider as any).connecting = null;
+    (provider as any).isConnected = false;
+    await assert.rejects(provider.get("a"));
+    failing = false;
+    assert.equal(await provider.get("a"), 1);
 });

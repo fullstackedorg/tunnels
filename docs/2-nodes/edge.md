@@ -151,6 +151,7 @@ IPC messages (all use the `type` discriminator, all keyed by `ticket`):
 | `type`                  | Direction        | Payload                                       | Purpose                                                                                           |
 | :---------------------- | :--------------- | :-------------------------------------------- | :------------------------------------------------------------------------------------------------ |
 | `connect_tunnel`        | Primary → worker | `{ reqId, ticket, tunnel, client, deadline }` | `deadline = receivedAt + connectTimeoutMs` as absolute epoch ms (same host clock).                |
+| `drain_sessions`        | Primary → worker | `{ timeoutMs, reason }`                       | Revoked state: let sessions finish for up to `timeoutMs` (`DRAIN_TIMEOUT`), then force-close.     |
 | `cancel_tunnel`         | Primary → worker | `{ ticket, reason }`                          | Abort in-flight dials.                                                                            |
 | `order_handoff`         | worker → Primary | `{ ticket }`                                  | Relayed socket accepted; Primary moves order from `edgeOrders` to `activeSessions`.               |
 | `connect_tunnel_failed` | worker → Primary | `{ reqId, ticket, reason }`                   | Primary forwards the frame on the lifeline and removes the pending order.                         |
@@ -165,6 +166,8 @@ IPC messages (all use the `type` discriminator, all keyed by `ticket`):
 ## Shutdown
 
 On `SIGINT` / `SIGTERM` the Edge closes its lifeline with `1001 edge_shutdown`, stops accepting orders, lets sessions finish for up to `SHUTDOWN_TIMEOUT`, closes any remaining relayed sockets with `1001 edge_shutdown`, and exits.
+
+In multi-worker mode the Primary closes the lifeline and forwards the signal to every worker; each worker drains its own sessions the same way and exits. The Primary exits once all workers have exited, or `SHUTDOWN_TIMEOUT + 5s` after the signal at the latest.
 
 ---
 

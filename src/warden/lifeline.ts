@@ -1,22 +1,32 @@
 import type { WebSocket } from "ws";
 import type { IncomingMessageWithDeny } from "../http/deny.ts";
 import type { Edge } from "../entities/schema.ts";
-import type { Reason } from "../constants.ts";
+import { isReason, type Reason } from "../constants.ts";
 import { kv } from "../kv/index.ts";
 import { storage } from "../storage/index.ts";
 import { logger } from "../utils/logger.ts";
 import { runGatingHook, dispatchTelemetry } from "../utils/hooks.ts";
-import { registerHeartbeat } from "../ws/heartbeat.ts";
+import { closeWithReason, getLocalCloseReason, registerHeartbeat } from "../ws/heartbeat.ts";
 import { createWebSocketServer } from "../ws/index.ts";
-import { deletePendingOrder, getPendingOrdersForEdge, pruneExpiredOrders } from "./orders.ts";
+import {
+    deletePendingOrder,
+    getPendingOrdersForEdge,
+    pruneExpiredOrders,
+    sendCancelTunnel,
+} from "./orders.ts";
 import { deleteTicket } from "./tickets.ts";
-import { failAllParkedRequests } from "./migration.ts";
 import { DEFAULT_HEARTBEAT_TIMEOUT } from "../constants.ts";
 
 const edgeLifelines = new Map<string, WebSocket>();
 let clusterIpcSender: ((msg: any) => void) | null = null;
 let currentBootId = "1";
 let failRelayedRequestFn: ((ticket: string, reason: Reason) => void) | null = null;
+let presenceTtlSec = 2 * DEFAULT_HEARTBEAT_TIMEOUT;
+
+/** Presence (`edge:<id>:worker`) lives for 2 * HEARTBEAT_TIMEOUT. */
+export function setPresenceHeartbeatTimeout(heartbeatTimeoutSec: number): void {
+    presenceTtlSec = 2 * heartbeatTimeoutSec;
+}
 
 export function setClusterIpcSender(sender: ((msg: any) => void) | null): void {
     clusterIpcSender = sender;
@@ -47,10 +57,9 @@ export async function isEdgeOnline(edgeId: string): Promise<boolean> {
 export async function refreshPresence(edgeId: string): Promise<void> {
     const workerId = logger.getWorkerIdentity();
     const nowSec = Math.floor(Date.now() / 1000);
-    const ttlWorker = 2 * DEFAULT_HEARTBEAT_TIMEOUT;
     const ttl30Days = 30 * 24 * 3600;
 
-    await kv.set(`edge:${edgeId}:worker`, workerId, ttlWorker);
+    await kv.set(`edge:${edgeId}:worker`, workerId, presenceTtlSec);
     await kv.set(`edge:${edgeId}:last_seen`, nowSec, ttl30Days);
     await kv.sadd(`worker:${workerId}:edges`, edgeId);
 }
@@ -60,12 +69,7 @@ export async function closeLifelineLocally(
     reason: Reason = "superseded"
 ): Promise<void> {
     const existing = edgeLifelines.get(edgeId);
-    if (existing && existing.readyState === existing.OPEN) {
-        const code = reason === "hub_shutdown" ? 1001 : 1000;
-        try {
-            existing.close(code, reason);
-        } catch {}
-    }
+    if (existing) closeWithReason(existing, reason);
 }
 
 export async function closeLifeline(edgeId: string, reason: Reason = "superseded"): Promise<void> {
@@ -82,20 +86,16 @@ export async function closeLifeline(edgeId: string, reason: Reason = "superseded
 }
 
 export async function closeAllLifelines(reason: Reason = "hub_shutdown"): Promise<void> {
-    const code = reason === "hub_shutdown" ? 1001 : 1000;
-    const entries = Array.from(edgeLifelines.entries());
-    for (const [edgeId, ws] of entries) {
-        if (ws.readyState === ws.OPEN) {
-            try {
-                ws.close(code, reason);
-            } catch {}
-        }
-    }
+    for (const ws of edgeLifelines.values()) closeWithReason(ws, reason);
 }
 
-export async function shutdownWarden(reason: Reason = "hub_shutdown"): Promise<void> {
-    failAllParkedRequests(reason);
-    await closeAllLifelines(reason);
+/** Sends cancel_tunnel for every pending order written on this worker's lifelines. */
+export function cancelLocalPendingOrders(reason: Reason): void {
+    for (const [edgeId, ws] of edgeLifelines) {
+        for (const { ticket, order } of getPendingOrdersForEdge(edgeId, ws)) {
+            sendCancelTunnel(ws, ticket, order.reqId, reason);
+        }
+    }
 }
 
 export async function wardenLifeline(
@@ -116,9 +116,7 @@ export async function wardenLifeline(
         // 1. Supersede existing lifeline
         const existing = edgeLifelines.get(edge.id);
         if (existing) {
-            try {
-                existing.close(1000, "superseded");
-            } catch {}
+            closeWithReason(existing, "superseded");
         } else {
             const currentWorker = await kv.get<string>(`edge:${edge.id}:worker`);
             if (currentWorker && currentWorker !== workerId && clusterIpcSender) {
@@ -142,7 +140,9 @@ export async function wardenLifeline(
 
         // 3. Register lifeline & presence
         edgeLifelines.set(edge.id, ws);
-        await refreshPresence(edge.id);
+        await refreshPresence(edge.id).catch((err) => {
+            logger.warn("Warden", `Failed to write presence of edge ${edge.id}: ${err?.message}`);
+        });
 
         registerHeartbeat(ws, {
             onSweep: () => {
@@ -178,32 +178,46 @@ export async function wardenLifeline(
         });
 
         // 5. Cleanup on disconnect
-        ws.once("close", async (code, reasonBuf) => {
-            edgeLifelines.delete(edge.id);
-            const reasonStr = (reasonBuf ? reasonBuf.toString("utf-8") : "") as Reason;
-            const reason: Reason = reasonStr || (code === 1001 ? "hub_shutdown" : "client_close");
-
-            await kv.delIfEquals(`edge:${edge.id}:worker`, workerId);
-            await kv.srem(`worker:${workerId}:edges`, edge.id);
-
-            const pending = getPendingOrdersForEdge(edge.id);
-            for (const { ticket, order } of pending) {
-                deletePendingOrder(ticket);
-                await deleteTicket(ticket);
-                const failReason = reason === "hub_shutdown" ? "hub_shutdown" : "edge_disconnected";
-                if (clusterIpcSender && order.originWorker !== workerId) {
-                    clusterIpcSender({
-                        type: "relayed_tunnel_failed",
-                        target: order.originWorker,
-                        ticket,
-                        reason: failReason,
-                    });
-                } else if (failRelayedRequestFn) {
-                    failRelayedRequestFn(ticket, failReason);
-                }
-            }
-
-            dispatchTelemetry("lifeline_disconnect", null, edge, reason);
+        ws.once("close", (_code, reasonBuf) => {
+            const peerReason = reasonBuf?.toString("utf-8");
+            const reason: Reason =
+                getLocalCloseReason(ws) ?? (isReason(peerReason) ? peerReason : "client_close");
+            onLifelineClosed(edge, ws, workerId, reason).catch((err) => {
+                logger.warn("Warden", `Lifeline cleanup failed: ${err?.message}`);
+            });
         });
     });
+}
+
+async function onLifelineClosed(edge: Edge, ws: WebSocket, workerId: string, reason: Reason) {
+    // A newer lifeline for this Edge on this worker keeps its registration and presence.
+    const replaced = edgeLifelines.has(edge.id) && edgeLifelines.get(edge.id) !== ws;
+    if (!replaced) {
+        edgeLifelines.delete(edge.id);
+        try {
+            await kv.delIfEquals(`edge:${edge.id}:worker`, workerId);
+            await kv.srem(`worker:${workerId}:edges`, edge.id);
+        } catch (err: any) {
+            logger.warn("Warden", `Failed to clear presence of edge ${edge.id}: ${err?.message}`);
+        }
+    }
+
+    const pending = getPendingOrdersForEdge(edge.id, ws);
+    for (const { ticket, order } of pending) {
+        deletePendingOrder(ticket);
+        await deleteTicket(ticket).catch(() => {});
+        const failReason = reason === "hub_shutdown" ? "hub_shutdown" : "edge_disconnected";
+        if (clusterIpcSender && order.originWorker !== workerId) {
+            clusterIpcSender({
+                type: "relayed_tunnel_failed",
+                target: order.originWorker,
+                ticket,
+                reason: failReason,
+            });
+        } else if (failRelayedRequestFn) {
+            failRelayedRequestFn(ticket, failReason);
+        }
+    }
+
+    dispatchTelemetry("lifeline_disconnect", null, edge, reason);
 }

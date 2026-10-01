@@ -94,3 +94,16 @@ export function resolveClientIp(req: IncomingMessage, trustedProxies: string[] =
 
     return remoteIp;
 }
+
+const UNREACHABLE_CODES = new Set([
+    "ECONNREFUSED",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+]);
+
+/** Maps a target dial error to its taxonomy reason. */
+export function classifyDialError(err: any): "target_unreachable" | "connect_timeout" {
+    return UNREACHABLE_CODES.has(err?.code) ? "target_unreachable" : "connect_timeout";
+}

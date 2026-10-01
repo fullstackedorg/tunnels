@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseConfig } from "../src/utils/config.ts";
+import { configNotices } from "../src/utils/config-notices.ts";
 
 test("config: default settings in Hub mode", () => {
     const config = parseConfig([], {});
@@ -72,4 +73,43 @@ test("config: validation throws when WORKERS > 1 without DB/Redis or ALLOW_FILES
     const valid = parseConfig(["--workers", "4", "--allow-fs-multiworker"], {});
     assert.equal(valid.workers, 4);
     assert.equal(valid.allowFsMultiworker, true);
+});
+
+test("config: ALLOW_FILESYSTEM_MULTIWORKER notices follow the Test Mode rules", () => {
+    const base = ["--allow-fs-multiworker"];
+    const warnMsg =
+        "ALLOW_FILESYSTEM_MULTIWORKER is enabled: file-backed shared storage/KV is for tests only (slow, global file lock, not durable).";
+
+    assert.deepEqual(configNotices(parseConfig(["--workers", "2", ...base], {}), {}), [
+        { level: "warn", message: warnMsg },
+    ]);
+    assert.deepEqual(
+        configNotices(parseConfig(["--workers", "2", ...base], {}), { NODE_ENV: "production" }),
+        [{ level: "error", message: warnMsg }]
+    );
+
+    const ignored = configNotices(parseConfig(base, {}), {});
+    assert.equal(ignored.length, 1);
+    assert.equal(ignored[0].level, "info");
+    assert.match(ignored[0].message, /ignored/);
+
+    const both = configNotices(
+        parseConfig(
+            [
+                "--workers",
+                "2",
+                "--postgres-url",
+                "postgres://x",
+                "--redis-url",
+                "redis://x",
+                ...base,
+            ],
+            {}
+        ),
+        {}
+    );
+    assert.equal(both.length, 1);
+    assert.equal(both[0].level, "info");
+
+    assert.deepEqual(configNotices(parseConfig([], {}), {}), []);
 });

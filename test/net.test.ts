@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import type { IncomingMessage } from "node:http";
-import { normalizeIp, buildBlockList, isTrustedProxy, resolveClientIp } from "../src/utils/net.ts";
+import {
+    normalizeIp,
+    buildBlockList,
+    isTrustedProxy,
+    resolveClientIp,
+    classifyDialError,
+} from "../src/utils/net.ts";
 import { generateToken, getTokenType } from "../src/utils/token.ts";
 
 test("net: normalizeIp converts IPv4-mapped IPv6 addresses", () => {
@@ -77,4 +83,18 @@ test("token: generateToken and getTokenType", () => {
     assert.strictEqual(getTokenType(""), "unknown");
     assert.strictEqual(getTokenType(null), "unknown");
     assert.strictEqual(getTokenType(undefined), "unknown");
+});
+
+test("net: classifyDialError maps refused, unreachable and DNS failures to target_unreachable", () => {
+    for (const code of ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN"]) {
+        assert.equal(
+            classifyDialError(Object.assign(new Error(code), { code })),
+            "target_unreachable"
+        );
+    }
+    assert.equal(
+        classifyDialError(Object.assign(new Error("t"), { code: "ETIMEDOUT" })),
+        "connect_timeout"
+    );
+    assert.equal(classifyDialError(new Error("other")), "connect_timeout");
 });

@@ -7,10 +7,9 @@ flowchart TD
     Gate -->|"threw / timeout"| R500["500"]
     Gate -->|"pass"| Accept["101 Switching Protocols;\npause runtime socket;\ndeadline = now + CONNECT_TIMEOUT"]
     Accept --> Kind{"tunnel.edgeId?"}
-    Kind -->|"set"| Live{"Edge online & not saturated?"}
+    Kind -->|"set"| Live{"Edge online?"}
     Live -->|"Offline"| C1014["Close 1014 (edge_disconnected)"]
-    Live -->|"Saturated"| C1013["Close 1013 (edge_saturated)"]
-    Live -->|"Ready"| Start
+    Live -->|"Online"| Start
     Kind -->|"null (direct)"| Start["tunnel_start (telemetry)\nregister session"]
     Start --> Dial{"Establish target stream"}
     Dial -->|"Direct"| TCP["TCP connect\n(connect timer until deadline)"]
@@ -18,7 +17,7 @@ flowchart TD
     TCP -->|"ok"| Splice
     Warden -->|"handoff"| Splice["Attach pipelines;\nawait tunnel_connected; resume"]
     TCP -.->|"fail"| Teardown
-    Warden -.->|"fail"| Teardown
+    Warden -.->|"fail (edge_saturated, edge_disconnected, ...)"| Teardown
     Splice --> Teardown["Teardown: CLOSE_CODES[reason];\ntunnel_end; unregister session"]
 ```
 
@@ -30,14 +29,15 @@ The Tunnel Handler owns the lifecycle of every session that starts from a runtim
 
 1. **Gate**: `tunnel_request(req, tunnel)` runs before the upgrade. `req.deny()` rejects with the hook's status (default `403`); a throw or `HOOK_TIMEOUT` rejects with `500`.
 2. **Accept**: `wss.handleUpgrade(req, socket, head, ...)` sends `101`. The `head` buffer is passed through so pipelined bytes are preserved. The runtime duplex is paused, so early driver bytes (e.g. a PostgreSQL `StartupMessage`) wait in its buffer. The deadline is set to `now + CONNECT_TIMEOUT`.
-3. **Liveness & Saturation** (relayed tunnels only): verified after `101`. If the Edge has no live lifeline, close immediately with `1014 edge_disconnected`. If the Edge's lifeline is saturated, close immediately with `1013 edge_saturated`.
-4. **Start**: register the session (see [Session Registry](#session-registry)) and dispatch `tunnel_start(req, tunnel)`. From here on `tunnel_end` fires exactly once.
+3. **Liveness** (relayed tunnels only): verified after `101` from [presence](warden.md#presence). If the Edge has no live lifeline, close immediately with `1014 edge_disconnected`; no session starts and no `tunnel_start` / `tunnel_end` fire.
+4. **Start**: register the session (see [Session Registry](#session-registry)) and dispatch `tunnel_start(req, tunnel)`. From here on `tunnel_end` fires exactly once, whatever ends the session (failure, teardown, revocation, or shutdown).
 5. **Target stream**:
     - **Direct**: `net.createConnection({ host: internalHost, port: internalPort })`, bounded by a plain timer that fires at the deadline, destroys the socket, and is cleared on `connect`. `socket.setTimeout()` is never used for this (it is an idle timeout). The target socket is paused on connect and uses TCP keepalive.
-    - **Relayed**: `warden.acquireRelayedStream(tunnel, req, deadline)` resolves with the relayed duplex at handoff, or rejects with a taxonomy reason (see [Relayed Failure Reason Sources](../1-concepts/protocol-spec.md#d-relayed-failure-reason-sources)).
-    - If the runtime disconnects first, the session ends with `client_aborted`, a 5s ticket tombstone is written to KV, and the Warden sends `cancel_tunnel` for relayed tunnels.
+    - **Relayed**: `warden.acquireRelayedStream(tunnel, req, deadline)` resolves with the relayed duplex at handoff, or rejects with a taxonomy reason (see [Relayed Failure Reason Sources](../1-concepts/protocol-spec.md#d-relayed-failure-reason-sources)), including `edge_saturated` when the lifeline worker refuses the order.
+    - If the runtime disconnects first, the session ends with `client_aborted`: a direct dial is destroyed; for relayed tunnels a 5s ticket tombstone is written to KV and the Warden sends `cancel_tunnel`.
+    - If the session is severed (see [Session Registry](#session-registry)) or the Hub shuts down before the target stream is ready, the runtime socket is closed with that reason and the late target stream, if any, is destroyed.
 6. **Splice**: attach both pipelines, await `tunnel_connected(req, tunnel, remoteSocket, targetSocket)` bounded by `HOOK_TIMEOUT`, then resume both streams. Hooks therefore observe every byte.
-7. **Teardown**: the first side to end or fail determines the reason. The close code is resolved dynamically from `CLOSE_CODES[reason]` ([Protocol Spec](../1-concepts/protocol-spec.md#5-close-codes)). For relayed sessions, both clean completions (`target_close`) and error closures propagate the reason and close code received from the Edge verbatim. If the session ended due to an error, the underlying `Error` instance is forwarded to the `tunnel_end` telemetry hook for rich diagnostics.
+7. **Teardown**: the first side to end or fail determines the reason. The close code is resolved dynamically from `CLOSE_CODES[reason]` ([Protocol Spec](../1-concepts/protocol-spec.md#5-close-codes)). For relayed sessions, the reason the Edge put in the relayed socket's close frame is propagated verbatim when it is a taxonomy reason (e.g. `target_unreachable` after handoff); otherwise a clean end is `target_close`. A runtime close reason that is not a taxonomy reason is reported as `client_close`. If the session ended due to an error, the underlying `Error` instance is forwarded to the `tunnel_end` telemetry hook for rich diagnostics.
 
 ```typescript
 import { pipeline } from "node:stream";
@@ -119,7 +119,7 @@ export async function severSessions(
 Example usage in an external event subscriber or plugin:
 
 ```typescript
-import { severSessions } from "../src/handlers/tunnel.ts";
+import { severSessions } from "../src/tunnels/registry.ts";
 
 // Terminate all sessions for a specific tunnel immediately
 const count = await severSessions({ tunnelId: "tun-uuid-1234" }, "token_rolled");

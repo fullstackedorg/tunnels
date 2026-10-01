@@ -7,7 +7,7 @@ import { parseConfig } from "../src/utils/config.ts";
 import { EdgeLifeline } from "../src/edge/lifeline.ts";
 import { getAvailablePort, createTempDir, cleanupTempDir, jsonFetch } from "./helpers.ts";
 
-test("edge_revocation: edge enters revoked state on 401 and recovers when TOKEN_FILE is updated", async () => {
+test("edge-revocation: edge enters revoked state on 401 and recovers when TOKEN_FILE is updated", async () => {
     const hubPort = await getAvailablePort();
     const dir = createTempDir("edge-revoc-");
     const tokenFilePath = path.join(dir, "edge-token.txt");

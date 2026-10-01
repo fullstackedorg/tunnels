@@ -2,7 +2,24 @@ import cluster, { type Worker } from "node:cluster";
 import type { AppConfig } from "../utils/config.ts";
 import { logger } from "../utils/logger.ts";
 import { EdgeLifeline } from "./lifeline.ts";
-import { processEdgeOrder, cancelEdgeOrder } from "./orders.ts";
+import { processEdgeOrder, cancelEdgeOrder, drainAndCloseEdgeSessions } from "./orders.ts";
+import type { ConnectTunnelOrder } from "../warden/types.ts";
+
+export type WorkerConnectTunnel = Omit<ConnectTunnelOrder, "connectTimeoutMs"> & {
+    deadline: number;
+};
+
+/** Primary → worker: the relative budget becomes an absolute deadline (same host clock). */
+export function orderToIpc(order: ConnectTunnelOrder, receivedAt: number): WorkerConnectTunnel {
+    const { connectTimeoutMs, ...rest } = order;
+    return { ...rest, deadline: receivedAt + connectTimeoutMs };
+}
+
+/** Worker side: what is left of the budget when the order reaches the worker. */
+export function orderFromIpc(msg: WorkerConnectTunnel, now: number): ConnectTunnelOrder {
+    const { deadline, ...rest } = msg;
+    return { ...rest, connectTimeoutMs: Math.max(0, deadline - now) };
+}
 
 interface WorkerLoad {
     id: number;
@@ -75,6 +92,11 @@ export function startEdgePrimary(config: AppConfig): void {
 
     lifeline = new EdgeLifeline({
         config,
+        onRevoked: (timeoutMs, reason) => {
+            for (const w of Object.values(cluster.workers || {})) {
+                if (w && w.isConnected()) w.send({ type: "drain_sessions", timeoutMs, reason });
+            }
+        },
         onOrder: (order) => {
             if (order.type === "connect_tunnel") {
                 const worker = getLeastBusyWorker();
@@ -83,14 +105,7 @@ export function startEdgePrimary(config: AppConfig): void {
                     const load = workerLoads.get(worker.id);
                     if (load) load.pendingCount++;
 
-                    worker.send({
-                        type: "connect_tunnel",
-                        reqId: order.reqId,
-                        ticket: order.ticket,
-                        tunnel: order.tunnel,
-                        client: order.client,
-                        connectTimeoutMs: order.connectTimeoutMs,
-                    });
+                    worker.send(orderToIpc(order, Date.now()));
                 } else {
                     lifeline?.sendFailedBeforeHandoff(
                         order.ticket,
@@ -146,15 +161,18 @@ export function startEdgePrimary(config: AppConfig): void {
     const shutdown = () => {
         if (isShuttingDown) return;
         isShuttingDown = true;
-        lifeline.stop();
+        lifeline?.stop().catch(() => {});
         for (const w of Object.values(cluster.workers || {})) {
             if (w && w.isConnected()) {
                 w.process.kill("SIGTERM");
             }
         }
-        const forceExitTimer = setTimeout(() => {
-            process.exit(0);
-        }, 5000);
+        const forceExitTimer = setTimeout(
+            () => {
+                process.exit(1);
+            },
+            (config.shutdownTimeout + 5) * 1000
+        );
         forceExitTimer.unref();
 
         checkAllExited();
@@ -171,7 +189,7 @@ export function startEdgeWorker(config: AppConfig): void {
         if (!order || typeof order !== "object") return;
 
         if (order.type === "connect_tunnel") {
-            processEdgeOrder(order, config.hubUrl!, {
+            processEdgeOrder(orderFromIpc(order, Date.now()), config.hubUrl!, {
                 onFailedBeforeHandoff: (ticket, reqId, reason) => {
                     process.send?.({ type: "connect_tunnel_failed", ticket, reqId, reason });
                 },
@@ -184,6 +202,20 @@ export function startEdgeWorker(config: AppConfig): void {
             });
         } else if (order.type === "cancel_tunnel") {
             cancelEdgeOrder(order.ticket, order.reason || "client_aborted");
+        } else if (order.type === "drain_sessions") {
+            drainAndCloseEdgeSessions(order.timeoutMs, order.reason).catch(() => {});
         }
     });
+
+    // The Primary forwards SIGTERM: drain this worker's sessions, then exit.
+    let shuttingDown = false;
+    const shutdown = () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        drainAndCloseEdgeSessions(config.shutdownTimeout * 1000, "edge_shutdown")
+            .catch(() => {})
+            .finally(() => process.exit(0));
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
 }

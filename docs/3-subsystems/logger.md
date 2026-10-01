@@ -40,9 +40,9 @@ Entries below `LOG_LEVEL` (default `info`) are not written or dispatched to the 
 Formats (`LOG_FORMAT`):
 
 - `text`: `[2026-09-23T20:14:58.120Z] [INFO] [Tunnel] Session started {"reqId":"..."}`
-- `json`: one object per line: `{"timestamp":"...","level":"info","category":"Tunnel","message":"Session started","reqId":"...","worker":"<bootId>:2"}`
+- `json`: one `LogEntry` object per line: `{"timestamp":"...","level":"info","category":"Tunnel","message":"Session started","meta":{"reqId":"..."},"worker":"<bootId>:2","reqId":"..."}`
 
-Every entry includes the worker identity, and the `reqId` when it relates to a request.
+Every entry includes the worker identity (`<bootId>:<workerId>` in a Hub worker or single-process Hub, `<bootId>:primary` in the Hub Primary), and the `reqId` when it relates to a request.
 
 ## Breadcrumbs
 
@@ -60,8 +60,9 @@ interface LogEntry {
     level: "debug" | "info" | "warn" | "error";
     category: string;
     message: string;
-    meta?: Record<string, any>;
+    meta?: Record<string, any>; // meta.error is serialized as { name, message, stack }
     worker: string;
+    reqId?: string; // copied from meta.reqId when present
 }
 ```
 

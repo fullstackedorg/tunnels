@@ -140,6 +140,8 @@ HUB_URL="ws://localhost:3000" TOKEN="edg_12345..." node src/main.ts
 
 All source changes take effect immediately on process restart.
 
+`TEST=1` is set by the test scripts for the `fullstackedorg/fullstacked` submodule used in integration tests (it disables its native webview); the server itself never reads it.
+
 ---
 
 ## 3. Automation Scripts (`package.json`)
@@ -155,8 +157,9 @@ The project uses standard scripts for all routine tasks:
         "typecheck": "tsc --noEmit",
         "check:loc": "node scripts/check-loc.ts --max 300",
         "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
-        "test": "node --test test/*.test.ts",
-        "test:integration": "docker compose -f docker-compose.test.yml up -d && node --test test/integration/*.test.ts"
+        "test": "TEST=1 node --test test/*.test.ts",
+        "test:coverage": "TEST=1 node --test --experimental-test-coverage test/*.test.ts",
+        "test:integration": "docker compose -f docker-compose.test.yml up -d && TEST=1 node --test test/integration/*.test.ts"
     },
     "prettier": {
         "tabWidth": 4,

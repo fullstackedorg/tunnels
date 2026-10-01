@@ -1,4 +1,6 @@
+import cluster from "node:cluster";
 import { parseConfig } from "./utils/config.ts";
+import { configNotices } from "./utils/config-notices.ts";
 import { logger } from "./utils/logger.ts";
 import { loadPlugins } from "./utils/hooks.ts";
 import { startHub } from "./hub/index.ts";
@@ -10,13 +12,9 @@ async function main() {
     logger.setLogLevel(config.logLevel);
     logger.setLogFormat(config.logFormat);
 
-    if (config.allowFsMultiworker && config.workers > 1) {
-        const msg =
-            "ALLOW_FILESYSTEM_MULTIWORKER is enabled: file-backed shared storage/KV is for tests only (slow, global file lock, not durable).";
-        if (process.env.NODE_ENV === "production") {
-            logger.error("Config", msg);
-        } else {
-            logger.warn("Config", msg);
+    if (cluster.isPrimary) {
+        for (const notice of configNotices(config)) {
+            logger[notice.level]("Config", notice.message);
         }
     }
 

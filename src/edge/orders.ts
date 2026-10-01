@@ -1,12 +1,12 @@
 import net from "node:net";
 import { pipeline, type Duplex } from "node:stream";
 import WebSocket from "ws";
-import type { Reason } from "../constants.ts";
-import { CLOSE_CODES } from "../constants.ts";
+import { CLOSE_CODES, isReason, type Reason } from "../constants.ts";
 import type { ConnectTunnelOrder } from "../warden/types.ts";
 import { runGatingHook, runAwaitedHook, dispatchTelemetry } from "../utils/hooks.ts";
 import { createWsDuplex } from "../utils/ws-stream.ts";
-import { registerHeartbeat } from "../ws/heartbeat.ts";
+import { getLocalCloseReason, registerHeartbeat } from "../ws/heartbeat.ts";
+import { classifyDialError } from "../utils/net.ts";
 
 export interface EdgeOrderContext {
     reqId: string;
@@ -150,13 +150,7 @@ export async function processEdgeOrder(
         s.on("error", (err: any) => {
             clearTimeout(timer);
             s.destroy();
-            const reason: Reason =
-                err.code === "ECONNREFUSED" ||
-                err.code === "EHOSTUNREACH" ||
-                err.code === "ENOTFOUND"
-                    ? "target_unreachable"
-                    : "connect_timeout";
-            err.reason = reason;
+            err.reason = classifyDialError(err);
             reject(err);
         });
     });
@@ -168,7 +162,7 @@ export async function processEdgeOrder(
     if (order.client.correlationId) {
         wsHeaders["x-request-id"] = order.client.correlationId;
     }
-    const wsClient = new WebSocket(hubUrl, { headers: wsHeaders });
+    const wsClient = new WebSocket(hubUrl, { headers: wsHeaders, perMessageDeflate: false });
     relayedWs = wsClient;
     relayedDuplex = createWsDuplex(wsClient);
     relayedDuplex.on("error", () => {});
@@ -195,7 +189,7 @@ export async function processEdgeOrder(
             clearTimeout(timer);
             const reasonStr = reasonBuf ? reasonBuf.toString("utf-8") : "";
             const err: any = new Error(`Relayed dial closed: ${reasonStr}`);
-            err.reason = (reasonStr as Reason) || "relay_dial_failed";
+            err.reason = isReason(reasonStr) ? reasonStr : "relay_dial_failed";
             reject(err);
         });
 
@@ -317,8 +311,8 @@ export async function processEdgeOrder(
     });
 
     ws.once("close", (_code, reasonBuf) => {
-        const reasonStr = reasonBuf ? reasonBuf.toString("utf-8") : "";
-        teardown((reasonStr as Reason) || "target_close");
+        const peer = reasonBuf?.toString("utf-8");
+        teardown(getLocalCloseReason(ws) ?? (isReason(peer) ? peer : "client_close"));
     });
 
     await runAwaitedHook("edge_tunnel_connected", context, order.tunnel, relayedDuplex, target);

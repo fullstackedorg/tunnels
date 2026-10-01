@@ -6,7 +6,7 @@ import { handleWardenIpc, setWardenClusterIpcSender } from "../src/warden/index.
 import { parkRelayedRequest, deleteParkedRelayedRequest } from "../src/warden/migration.ts";
 import { setSaturationLimits } from "../src/warden/orders.ts";
 
-test("cluster_extended: handleWardenIpc handles disconnected and saturated edge on relayed_tunnel_request", () => {
+test("cluster-extended: handleWardenIpc handles disconnected and saturated edge on relayed_tunnel_request", () => {
     const workerIdentity = "boot1:2";
     logger.setWorkerIdentity(workerIdentity);
 
@@ -34,7 +34,7 @@ test("cluster_extended: handleWardenIpc handles disconnected and saturated edge 
     setSaturationLimits(100, 1024);
 });
 
-test("cluster_extended: handleWardenIpc handles relayed_tunnel_failed by rejecting parked request", async () => {
+test("cluster-extended: handleWardenIpc handles relayed_tunnel_failed by rejecting parked request", async () => {
     const workerIdentity = "boot1:1";
     logger.setWorkerIdentity(workerIdentity);
 
@@ -62,7 +62,7 @@ test("cluster_extended: handleWardenIpc handles relayed_tunnel_failed by rejecti
     deleteParkedRelayedRequest(ticket);
 });
 
-test("cluster_extended: handleWardenIpc handles relayed_tunnel_socket with handle", async () => {
+test("cluster-extended: handleWardenIpc handles relayed_tunnel_socket with handle", async () => {
     const workerIdentity = "boot1:1";
     logger.setWorkerIdentity(workerIdentity);
 
@@ -103,7 +103,7 @@ test("cluster_extended: handleWardenIpc handles relayed_tunnel_socket with handl
     assert.ok(true);
 });
 
-test("cluster_extended: primary dead worker recovery routing logic", () => {
+test("cluster-extended: primary dead worker recovery routing logic", () => {
     // Simulate Primary IPC router message handler
     const dispatchedToLifeline: any[] = [];
     const dispatchedToOrigin: any[] = [];

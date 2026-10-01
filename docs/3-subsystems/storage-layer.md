@@ -115,4 +115,5 @@ Used when `WORKERS > 1`, `POSTGRES_URL` is not set, and `ALLOW_FILESYSTEM_MULTIW
 Storage providers execute mutations within atomic transactions via `storage.transaction(async tx => { ... })`. For operations modifying or deleting entities (`update`, `delete`, `roll_token`, and cascading edge deletion), changes are committed in the database before cache coordination takes place:
 
 1. **Transaction Commit**: Mutation executes against PostgreSQL or the filesystem store atomically.
-2. **Deterministic Write-Through**: The REST API writes updated entity data to KV cache (`entity:edge:<id>` or `entity:tunnel:<id>`) and sets negative cache tombstones (`entity:miss:<oldToken>` with 5s TTL) if tokens were rolled or entities removed, as defined in [Write-Through Caching](entity-schemas.md#write-through-caching).
+2. **Deterministic Write-Through**: The REST API writes the updated entity to the token cache (`entity:<table>:<token>`) and writes negative tombstones (`entity:miss:<token>` with `NEGATIVE_CACHE_TTL`) for rolled or removed tokens, as defined in [Invalidation Order](entity-schemas.md#invalidation-order-write-through).
+3. **Session Severing**: affected sessions are closed only after the commit and the cache update (see [Session Registry](tunnel-handlers.md#session-registry)).

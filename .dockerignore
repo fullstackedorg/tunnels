@@ -1,0 +1,8 @@
+node_modules
+data
+drizzle
+integration
+test
+docs
+examples
+.git

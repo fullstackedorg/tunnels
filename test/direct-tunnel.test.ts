@@ -13,7 +13,7 @@ import {
     jsonFetch,
 } from "./helpers.ts";
 
-test("direct_tunnel: bidirectional streaming through direct TCP dial", async () => {
+test("direct-tunnel: bidirectional streaming through direct TCP dial", async () => {
     clearHooks();
     const echo = await createTestEchoServer();
     const hubPort = await getAvailablePort();
@@ -79,7 +79,7 @@ test("direct_tunnel: bidirectional streaming through direct TCP dial", async () 
     }
 });
 
-test("direct_tunnel: target unreachable closes with 1014 target_unreachable", async () => {
+test("direct-tunnel: target unreachable closes with 1014 target_unreachable", async () => {
     clearHooks();
     const deadPort = await getAvailablePort();
     const hubPort = await getAvailablePort();

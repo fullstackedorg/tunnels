@@ -15,7 +15,7 @@ import {
     connectTestWs,
 } from "./helpers.ts";
 
-test("relayed_edge_cases: offline edge closes runtime with 1014 edge_disconnected", async () => {
+test("relayed-edge-cases: offline edge closes runtime with 1014 edge_disconnected", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("edge-offline-");
@@ -63,7 +63,7 @@ test("relayed_edge_cases: offline edge closes runtime with 1014 edge_disconnecte
     }
 });
 
-test("relayed_edge_cases: saturated edge closes runtime with 1013 edge_saturated", async () => {
+test("relayed-edge-cases: saturated edge closes runtime with 1013 edge_saturated", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("edge-sat-");
@@ -121,7 +121,7 @@ test("relayed_edge_cases: saturated edge closes runtime with 1013 edge_saturated
     }
 });
 
-test("relayed_edge_cases: direct connect timeout closes with 1014 connect_timeout", async () => {
+test("relayed-edge-cases: direct connect timeout closes with 1014 connect_timeout", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("direct-timeout-");
@@ -168,7 +168,7 @@ test("relayed_edge_cases: direct connect timeout closes with 1014 connect_timeou
     }
 });
 
-test("relayed_edge_cases: relayed deadline timeout closes with 1014 connect_timeout", async () => {
+test("relayed-edge-cases: relayed deadline timeout closes with 1014 connect_timeout", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("relayed-timeout-");
@@ -227,7 +227,7 @@ test("relayed_edge_cases: relayed deadline timeout closes with 1014 connect_time
     }
 });
 
-test("relayed_edge_cases: target clean FIN closes runtime with 1000 target_close", async () => {
+test("relayed-edge-cases: target clean FIN closes runtime with 1000 target_close", async () => {
     clearHooks();
     const hubPort = await getAvailablePort();
     const targetPort = await getAvailablePort();
@@ -278,7 +278,7 @@ test("relayed_edge_cases: target clean FIN closes runtime with 1000 target_close
     }
 });
 
-test("relayed_edge_cases: target stream error closes runtime with 1011 stream_error", async () => {
+test("relayed-edge-cases: target stream error closes runtime with 1011 stream_error", async () => {
     clearHooks();
     const hubPort = await getAvailablePort();
     const targetPort = await getAvailablePort();

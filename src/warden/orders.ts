@@ -8,6 +8,8 @@ export interface PendingOrder {
     reqId: string;
     edgeId: string;
     expiresAt: number;
+    /** The lifeline the order was written on (lifeline worker only). */
+    lifeline?: WebSocket;
 }
 
 const pendingOrders = new Map<string, PendingOrder>();
@@ -35,10 +37,7 @@ export function isLifelineSaturated(edgeId: string, ws: WebSocket): boolean {
     return false;
 }
 
-export function recordPendingOrder(
-    ticket: string,
-    order: { originWorker: string; reqId: string; edgeId: string; expiresAt: number }
-): void {
+export function recordPendingOrder(ticket: string, order: PendingOrder): void {
     pendingOrders.set(ticket, order);
 }
 
@@ -50,12 +49,14 @@ export function deletePendingOrder(ticket: string): boolean {
     return pendingOrders.delete(ticket);
 }
 
+/** Pending orders of an Edge, optionally only those written on one lifeline. */
 export function getPendingOrdersForEdge(
-    edgeId: string
+    edgeId: string,
+    lifeline?: WebSocket
 ): Array<{ ticket: string; order: PendingOrder }> {
     const list: Array<{ ticket: string; order: PendingOrder }> = [];
     for (const [ticket, order] of pendingOrders.entries()) {
-        if (order.edgeId === edgeId) {
+        if (order.edgeId === edgeId && (!lifeline || order.lifeline === lifeline)) {
             list.push({ ticket, order });
         }
     }
@@ -91,6 +92,7 @@ export function sendConnectTunnel(
         reqId,
         edgeId,
         expiresAt: deadline + 2000,
+        lifeline: ws,
     });
 
     try {

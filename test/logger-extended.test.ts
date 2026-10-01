@@ -6,7 +6,7 @@ import { logger } from "../src/utils/logger.ts";
 import { loadPlugins, clearHooks } from "../src/utils/hooks.ts";
 import { createTempDir, cleanupTempDir } from "./helpers.ts";
 
-test("logger_extended: json log format outputs valid JSON", () => {
+test("logger-extended: json log format outputs valid JSON", () => {
     logger.setLogFormat("json");
     logger.setLogLevel("info");
 
@@ -32,7 +32,7 @@ test("logger_extended: json log format outputs valid JSON", () => {
     }
 });
 
-test("logger_extended: suppressed log levels are kept in breadcrumbs but not written", () => {
+test("logger-extended: suppressed log levels are kept in breadcrumbs but not written", () => {
     logger.setLogLevel("error");
     logger.clearBreadcrumbs();
 
@@ -74,7 +74,7 @@ test("logger_extended: suppressed log levels are kept in breadcrumbs but not wri
     }
 });
 
-test("logger_extended: logger.error dumps breadcrumbs to stderr", () => {
+test("logger-extended: logger.error dumps breadcrumbs to stderr", () => {
     logger.setLogLevel("info");
     logger.clearBreadcrumbs();
 
@@ -101,7 +101,7 @@ test("logger_extended: logger.error dumps breadcrumbs to stderr", () => {
     }
 });
 
-test("logger_extended: loadPlugins dynamically imports plugins and throws on missing plugin", async () => {
+test("logger-extended: loadPlugins dynamically imports plugins and throws on missing plugin", async () => {
     clearHooks();
     const dir = createTempDir("plugins-");
     const pluginPath = path.join(dir, "my-plugin.mjs");

@@ -50,8 +50,8 @@ One TCP port (`PORT`, default 3000) serves both the REST API and all WebSocket u
 5. Classify by prefix (no storage access needed for the classification itself):
     - `tmp_`: relayed socket, handled by the [Warden](warden.md#2-relayed-sessions). Claimed via KV ticket `getdel`; if cancelled tombstone, closed with cancellation reason.
     - `edg_`: lifeline. The edge is resolved, `lifeline_connect` runs, then the [Warden](warden.md#1-lifelines) accepts it.
-    - `tun_`: runtime socket. The tunnel is resolved, `tunnel_request` runs, and the upgrade is accepted with `101`. If the target Edge is offline or saturated, it is immediately closed with `1014 edge_disconnected` or `1013 edge_saturated`.
-    - missing or unknown prefix, or a token that does not resolve: `401 Unauthorized`. If resolution fails because storage or KV is unavailable: `503 Service Unavailable`.
+    - `tun_`: runtime socket. The tunnel is resolved, `tunnel_request` runs, and the upgrade is accepted with `101`. If the target Edge is offline it is immediately closed with `1014 edge_disconnected`; a saturated Edge closes the session with `1013 edge_saturated` (see [Saturation](../1-concepts/protocol-spec.md#e-saturation)).
+    - missing or unknown prefix, or a token that does not resolve: `401 Unauthorized`. If resolution (including the ticket claim) fails because storage or KV is unavailable: `503 Service Unavailable`. Any other unexpected error while handling an upgrade: `500 Internal Server Error`.
 
 > [!NOTE]
 > Standard browser WebSockets cannot send custom request headers per the [WHATWG WebSocket API specification](https://websockets.spec.whatwg.org/), so handshakes lacking an `Authorization` header are rejected with `401 Unauthorized`. In browser workloads running on the **FullStacked runtime**, `window.WebSocket` is overridden by `WebSocketCore`. Registering a tunnel via `const tunnelName = await tunnel.register({ host, authorization, name? })` returns the generated string (or custom `name`); opening `new window.WebSocket("ws://" + tunnelName)` then routes through the tunnel using the registered `authorization` credentials.
@@ -60,13 +60,14 @@ All rejection statuses and their meaning for clients are defined in [Rejection S
 
 ---
 
-## `req.deny(statusCode = 403, reason = "Denied", options?: { headers?: Record<string, string>; fields?: Record<string, string> })`
+## `req.deny(statusCode = 403, reason = "Denied", options?)`
 
 Every request and upgrade gets a `deny` function:
 
 - **HTTP requests**: sends `statusCode` with `Content-Type: application/json` and body `JSON.stringify({ error: reason, fields })`, then ends the response.
 - **Upgrades**: Node provides no response object before the handshake, so `deny` writes the raw response to the socket (`HTTP/1.1 <status> <standard status text>`, `Content-Type: application/json`, `Connection: close`, `Content-Length`, then the JSON body built with `JSON.stringify`) and ends the socket.
-- **Headers & Fields**: hooks may pass extra headers and structured validation error fields, e.g. `req.deny(429, "Too Many Requests", { headers: { "Retry-After": "30" } })` or `req.deny(400, "Validation Error", { fields: { "internalPort": "must be > 1024" } })`.
+- **Headers & Fields**: `options` is either `{ headers?: Record<string, string>; fields?: Record<string, string> }` or, as a shorthand, a plain header map. Hooks may pass extra headers and structured validation error fields, e.g. `req.deny(429, "Too Many Requests", { "Retry-After": "30" })`, `req.deny(429, "Too Many Requests", { headers: { "Retry-After": "30" } })`, or `req.deny(400, "Validation Error", { fields: { "internalPort": "must be > 1024" } })`.
+- **Idempotent**: only the first call takes effect.
 - **Short-circuit**: `deny` sets the dedicated flag `req.denied = true`; the core checks this flag (never Node's own `req.destroyed`) after each hook and stops processing.
 
 Status codes carry meaning for clients: hooks use `403` (policy, the default) or `429` (rate limit). `401` is reserved for the core; do not use it in hooks, because Edges treat `401` as a revoked credential.

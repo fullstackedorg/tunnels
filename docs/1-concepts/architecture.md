@@ -107,12 +107,13 @@ sequenceDiagram
     Runtime->>Hub: Upgrade (Authorization: tunnel token)
     Hub->>Hub: hub_upgrade, resolve tunnel, tunnel_request
     Hub-->>Runtime: 101 (runtime socket paused), deadline = now + CONNECT_TIMEOUT
-    alt Edge Offline
+    alt Edge Offline (no presence)
         Hub-->>Runtime: Close 1014 (edge_disconnected)
-    else Edge Saturated
-        Hub-->>Runtime: Close 1013 (edge_saturated)
     else Edge Online
         Hub->>Hub: tunnel_start, store ticket (TTL CONNECT_TIMEOUT + 2s)
+        opt Lifeline saturated
+            Hub-->>Runtime: Close 1013 (edge_saturated), tunnel_end
+        end
         Hub->>Edge: connect_tunnel { reqId, ticket, tunnel, client, connectTimeoutMs }
         Edge->>Edge: edge_tunnel_request, edge_tunnel_start
         par Parallel Dials (bounded by connectTimeoutMs)

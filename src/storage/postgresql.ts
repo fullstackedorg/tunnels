@@ -87,14 +87,9 @@ export class PostgreSQLStorageProvider implements StorageProvider {
             selectQuery = selectQuery.where(whereClause);
         }
 
-        if (query?.orderBy) {
-            const col = (table as any)[query.orderBy.column];
-            if (col) {
-                selectQuery = selectQuery.orderBy(
-                    query.orderBy.direction === "desc" ? desc(col) : asc(col)
-                );
-            }
-        }
+        const orderBy = query?.orderBy ?? { column: "id", direction: "asc" };
+        const col = (table as any)[orderBy.column] ?? (table as any).id;
+        selectQuery = selectQuery.orderBy(orderBy.direction === "desc" ? desc(col) : asc(col));
 
         const offset = Math.max(0, query?.offset ?? 0);
         const limit = Math.min(1000, Math.max(0, query?.limit ?? 100));

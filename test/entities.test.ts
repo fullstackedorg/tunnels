@@ -5,8 +5,16 @@ import { resolveToken, cacheRollToken, cacheDeleteEntity } from "../src/entities
 import { FilesystemStorageProvider } from "../src/storage/filesystem.ts";
 import { setStorage } from "../src/storage/index.ts";
 import { MemoryKVProvider } from "../src/kv/memory.ts";
-import { setKV } from "../src/kv/index.ts";
-import { createTempDir, cleanupTempDir } from "./helpers.ts";
+import { initKV, setKV } from "../src/kv/index.ts";
+import { parseConfig } from "../src/utils/config.ts";
+import {
+    SpyKV,
+    cleanupTempDir,
+    connectTestWs,
+    createTempDir,
+    createTunnel,
+    startTestHub,
+} from "./helpers.ts";
 import type { Tunnel } from "../src/entities/schema.ts";
 
 test("entities: validation disallows client-provided id, token, and version", () => {
@@ -99,12 +107,36 @@ test("entities: token resolution caches positive result and negative tombstones"
         assert.equal(newLookup.entity.token, newToken);
 
         // 4. Delete entity
-        await cacheDeleteEntity("tunnel", newToken, added.id);
+        await cacheDeleteEntity("tunnel", newToken);
         const afterDelete = await resolveToken(newToken);
         assert.equal(afterDelete, null);
     } finally {
         await testStorage.close();
         await testKv.close();
+        setStorage(null);
+        setKV(null);
         cleanupTempDir(dir);
+    }
+});
+
+test("entities: ENTITY_CACHE_TTL and NEGATIVE_CACHE_TTL are applied to the token cache", async () => {
+    const h = await startTestHub(["--entity-cache-ttl", "9", "--negative-cache-ttl", "2"]);
+    const spy = new SpyKV(initKV(parseConfig([])));
+    setKV(spy);
+    try {
+        const tunnel = await createTunnel(h.baseUrl, {
+            internalHost: "127.0.0.1",
+            internalPort: 1,
+        });
+        assert.equal(spy.sets.find((s) => s.key === `entity:tunnel:${tunnel.token}`)?.ttl, 9);
+
+        await assert.rejects(
+            connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+                headers: { Authorization: "tun_unknown" },
+            })
+        );
+        assert.equal(spy.sets.find((s) => s.key === "entity:miss:tun_unknown")?.ttl, 2);
+    } finally {
+        await h.close();
     }
 });

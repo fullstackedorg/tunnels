@@ -16,7 +16,7 @@ import {
     connectTestWs,
 } from "./helpers.ts";
 
-test("edge_lifecycle: telemetry hooks lifeline_connect and lifeline_disconnect fire", async () => {
+test("edge-lifecycle: telemetry hooks lifeline_connect and lifeline_disconnect fire", async () => {
     clearHooks();
     const port = await getAvailablePort();
     const tempDir = createTempDir("edge-hooks-");
@@ -64,7 +64,7 @@ test("edge_lifecycle: telemetry hooks lifeline_connect and lifeline_disconnect f
     }
 });
 
-test("edge_lifecycle: tokenFile reads token from disk dynamically", async () => {
+test("edge-lifecycle: tokenFile reads token from disk dynamically", async () => {
     const tempDir = createTempDir("tokenfile-");
     const tokenFilePath = path.join(tempDir, "token.txt");
     fs.writeFileSync(tokenFilePath, "edg_initialtoken123\n", "utf-8");
@@ -88,7 +88,7 @@ test("edge_lifecycle: tokenFile reads token from disk dynamically", async () => 
     cleanupTempDir(tempDir);
 });
 
-test("edge_lifecycle: HTTP 403 on handshake delays reconnect by maxReconnectInterval", async () => {
+test("edge-lifecycle: HTTP 403 on handshake delays reconnect by maxReconnectInterval", async () => {
     const fakeServer = http.createServer((_req, res) => {
         res.writeHead(403, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Forbidden" }));
@@ -124,7 +124,7 @@ test("edge_lifecycle: HTTP 403 on handshake delays reconnect by maxReconnectInte
     }
 });
 
-test("edge_lifecycle: HTTP 429 on handshake uses Retry-After header", async () => {
+test("edge-lifecycle: HTTP 429 on handshake uses Retry-After header", async () => {
     const fakeServer = http.createServer((_req, res) => {
         res.writeHead(429, {
             "Content-Type": "application/json",
@@ -161,7 +161,7 @@ test("edge_lifecycle: HTTP 429 on handshake uses Retry-After header", async () =
     }
 });
 
-test("edge_lifecycle: superseded close reason schedules reconnect with maxReconnectInterval", async () => {
+test("edge-lifecycle: superseded close reason schedules reconnect with maxReconnectInterval", async () => {
     const fakeServer = http.createServer();
     const port = await getAvailablePort();
 
@@ -200,7 +200,7 @@ test("edge_lifecycle: superseded close reason schedules reconnect with maxReconn
     }
 });
 
-test("edge_lifecycle: token_rolled and edge_deleted close reasons enter revoked state", async () => {
+test("edge-lifecycle: token_rolled and edge_deleted close reasons enter revoked state", async () => {
     const fakeServer = http.createServer();
     const port = await getAvailablePort();
 

@@ -189,7 +189,7 @@ registerHook("update_tunnel", (req, _item, updates) => {
 });
 
 // 6. Programmatically sever active sessions when an external revocation event occurs:
-import { severSessions } from "../src/handlers/tunnel.ts";
+import { severSessions } from "../src/tunnels/registry.ts";
 
 export async function onExternalRevocation(tunnelId: string) {
     const count = await severSessions({ tunnelId }, "token_rolled");

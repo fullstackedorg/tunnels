@@ -1,5 +1,34 @@
 import type { WebSocket } from "ws";
-import { DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT } from "../constants.ts";
+import type { Reason } from "../constants.ts";
+import {
+    CLOSE_CODES,
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_HEARTBEAT_TIMEOUT,
+} from "../constants.ts";
+
+/** Grace period for a dead peer's close handshake before the socket is destroyed. */
+const TERMINATE_GRACE_MS = 1000;
+
+const localCloseReasons = new WeakMap<WebSocket, Reason>();
+
+/**
+ * Closes a WebSocket with a taxonomy reason and remembers that reason locally, so close
+ * handlers report it even when the peer never answers the close handshake.
+ */
+export function closeWithReason(ws: WebSocket, reason: Reason): void {
+    if (!localCloseReasons.has(ws)) localCloseReasons.set(ws, reason);
+    if (ws.readyState !== ws.OPEN) return;
+    try {
+        ws.close(CLOSE_CODES[reason], reason);
+    } catch {
+        ws.terminate();
+    }
+}
+
+/** The reason this process closed the WebSocket with, if it initiated the close. */
+export function getLocalCloseReason(ws: WebSocket): Reason | undefined {
+    return localCloseReasons.get(ws);
+}
 
 interface HeartbeatRecord {
     ws: WebSocket;
@@ -33,11 +62,10 @@ function runSweep(): void {
             if (record.onTimeout) {
                 record.onTimeout();
             }
-            try {
-                ws.close(1011, "heartbeat_timeout");
-            } catch {
-                ws.terminate();
-            }
+            closeWithReason(ws, "heartbeat_timeout");
+            setTimeout(() => {
+                if (ws.readyState !== ws.CLOSED) ws.terminate();
+            }, TERMINATE_GRACE_MS).unref();
             continue;
         }
 

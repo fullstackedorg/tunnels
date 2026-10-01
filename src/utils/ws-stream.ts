@@ -11,11 +11,20 @@ export interface StreamTeardownOptions {
     onTeardownComplete?: () => void;
 }
 
+/** Close reason received from the peer of a duplex created by createWsDuplex, if any. */
+export function getPeerCloseReason(duplex: Duplex): string | undefined {
+    return (duplex as any)._peerCloseReason;
+}
+
 /**
  * Creates a Duplex stream from a WebSocket with allowHalfOpen: false.
+ * The peer's close reason is recorded before the stream ends (see getPeerCloseReason).
  */
 export function createWsDuplex(ws: WebSocket): Duplex {
     const duplex = createWebSocketStream(ws, { allowHalfOpen: false });
+    ws.prependOnceListener("close", (_code: number, reason: Buffer) => {
+        (duplex as any)._peerCloseReason = reason?.toString("utf-8") || undefined;
+    });
     const originalFinal = duplex._final;
     duplex._final = function (callback) {
         if (ws.readyState === ws.OPEN) {
@@ -29,15 +38,18 @@ export function createWsDuplex(ws: WebSocket): Duplex {
     };
 
     duplex._destroy = function (err, callback) {
-        if (ws.readyState === ws.OPEN) {
-            const reason: Reason =
-                (duplex as any)._closeReason || (err ? "stream_error" : "client_close");
-            const code = CLOSE_CODES[reason] ?? (err ? 1011 : 1000);
-            try {
-                ws.close(code, reason);
-            } catch {
-                ws.terminate();
+        if (ws.readyState === ws.OPEN || ws.readyState === ws.CLOSING) {
+            if (ws.readyState === ws.OPEN) {
+                const reason: Reason =
+                    (duplex as any)._closeReason || (err ? "stream_error" : "client_close");
+                const code = CLOSE_CODES[reason] ?? (err ? 1011 : 1000);
+                try {
+                    ws.close(code, reason);
+                } catch {
+                    ws.terminate();
+                }
             }
+            // Let the close frame flush; destroy after the handshake or the safety timer.
             const timer = setTimeout(() => {
                 if (ws.readyState !== ws.CLOSED) ws.terminate();
             }, 500);
@@ -86,12 +98,14 @@ export function performSymmetricalTeardown(options: StreamTeardownOptions): void
         }
     };
 
-    if (ws.readyState === ws.OPEN) {
-        try {
-            ws.close(code, reason);
-        } catch {
-            cleanup();
-            return;
+    if (ws.readyState === ws.OPEN || ws.readyState === ws.CLOSING) {
+        if (ws.readyState === ws.OPEN) {
+            try {
+                ws.close(code, reason);
+            } catch {
+                cleanup();
+                return;
+            }
         }
 
         const timer = setTimeout(cleanup, 500);

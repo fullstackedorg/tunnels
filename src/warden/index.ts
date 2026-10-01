@@ -5,45 +5,66 @@ import type { Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
 import { kv } from "../kv/index.ts";
 import { DEFAULT_CONNECT_TIMEOUT } from "../constants.ts";
-import { createTicket, claimTicket, cancelTicketTombstone, deleteTicket } from "./tickets.ts";
+import { createTicket, cancelTicketTombstone } from "./tickets.ts";
 import {
     isLifelineSaturated,
     sendConnectTunnel,
     sendCancelTunnel,
     deletePendingOrder,
+    getPendingOrder,
 } from "./orders.ts";
 import {
     getLocalLifeline,
     isEdgeOnline,
     wardenLifeline,
     closeLifelineLocally,
+    closeAllLifelines,
+    cancelLocalPendingOrders,
     setClusterIpcSender as setLifelineClusterIpc,
     setFailRelayedRequestFn,
+    setPresenceHeartbeatTimeout,
 } from "./lifeline.ts";
 import {
     parkRelayedRequest,
     deleteParkedRelayedRequest,
     failRelayedRequest,
-    completeHandoff,
+    failAllParkedRequests,
     handleMigratedSocket,
     setMigrationIpcSender,
 } from "./migration.ts";
-import { createWebSocketServer } from "../ws/index.ts";
-import { CLOSE_CODES } from "../constants.ts";
 
 export {
     isEdgeOnline,
     wardenLifeline,
     closeLifelineLocally,
     closeLifeline,
-    shutdownWarden,
     setWardenBootId,
 } from "./lifeline.ts";
-export { handleMigratedSocket } from "./migration.ts";
+export { handleMigratedSocket, wardenRelayedSocket } from "./migration.ts";
 
 setFailRelayedRequestFn(failRelayedRequest);
 
 let clusterIpcSender: ((msg: any, handle?: any) => void) | null = null;
+let connectTimeoutSec = DEFAULT_CONNECT_TIMEOUT;
+
+/** Applies the Hub settings the Warden depends on. */
+export function configureWarden(options: { connectTimeout: number; heartbeatTimeout: number }) {
+    connectTimeoutSec = options.connectTimeout;
+    setPresenceHeartbeatTimeout(options.heartbeatTimeout);
+}
+
+/** Hub shutdown: cancel orders on local lifelines, fail parked requests, close lifelines. */
+export async function shutdownWarden(reason: Reason = "hub_shutdown"): Promise<void> {
+    cancelLocalPendingOrders(reason);
+    failAllParkedRequests(reason);
+    await closeAllLifelines(reason);
+}
+
+function kvFailure(err: unknown): Error {
+    const wrapped: any = new Error(`KV unavailable during relayed setup: ${(err as any)?.message}`);
+    wrapped.reason = "stream_error";
+    return wrapped;
+}
 
 export function setWardenClusterIpcSender(sender: ((msg: any, handle?: any) => void) | null): void {
     clusterIpcSender = sender;
@@ -61,22 +82,31 @@ export async function acquireRelayedStream(
     }
 
     const currentWorker = logger.getWorkerIdentity();
-    const lifelineWorker = await kv.get<string>(`edge:${tunnel.edgeId}:worker`);
+    let lifelineWorker: string | null;
+    try {
+        lifelineWorker = await kv.get<string>(`edge:${tunnel.edgeId}:worker`);
+    } catch (err) {
+        throw kvFailure(err);
+    }
     if (!lifelineWorker) {
         const err: any = new Error("Edge is offline");
         err.reason = "edge_disconnected";
         throw err;
     }
 
-    const ttlSeconds = DEFAULT_CONNECT_TIMEOUT + 2;
-    const ticket = await createTicket(
-        currentWorker,
-        lifelineWorker,
-        tunnel.edgeId,
-        req.id,
-        tunnel.id,
-        ttlSeconds
-    );
+    let ticket: string;
+    try {
+        ticket = await createTicket(
+            currentWorker,
+            lifelineWorker,
+            tunnel.edgeId,
+            req.id,
+            tunnel.id,
+            connectTimeoutSec + 2
+        );
+    } catch (err) {
+        throw kvFailure(err);
+    }
 
     return new Promise<Duplex>((resolve, reject) => {
         let isSettled = false;
@@ -95,12 +125,15 @@ export async function acquireRelayedStream(
             }
         };
 
-        const onRuntimeClose = async () => {
+        const abandon = (reason: Reason) => {
             if (isSettled) return;
-            await cancelTicketTombstone(ticket, "client_aborted");
-            notifyCancel("client_aborted");
-            safeReject("client_aborted");
+            safeReject(reason);
+            notifyCancel(reason);
+            cancelTicketTombstone(ticket, reason).catch((err) => {
+                logger.warn("Warden", `Failed to write ticket tombstone: ${err?.message}`);
+            });
         };
+        const onRuntimeClose = () => abandon("client_aborted");
 
         const safeReject = (reason: Reason) => {
             if (isSettled) return;
@@ -122,11 +155,7 @@ export async function acquireRelayedStream(
         };
 
         const msRemaining = Math.max(1, deadline - Date.now());
-        const deadlineTimer = setTimeout(async () => {
-            await cancelTicketTombstone(ticket, "connect_timeout");
-            notifyCancel("connect_timeout");
-            safeReject("connect_timeout");
-        }, msRemaining);
+        const deadlineTimer = setTimeout(() => abandon("connect_timeout"), msRemaining);
         deadlineTimer.unref();
 
         req.socket.once("close", onRuntimeClose);
@@ -191,59 +220,6 @@ export async function acquireRelayedStream(
     });
 }
 
-export async function wardenRelayedSocket(
-    req: IncomingMessageWithDeny,
-    socket: Duplex,
-    head: Buffer
-): Promise<void> {
-    const ticket = req.headers.authorization;
-    if (!ticket || !ticket.startsWith("tmp_")) {
-        req.deny(401, "Unauthorized");
-        return;
-    }
-
-    const claimed = await claimTicket(ticket);
-    if (!claimed) {
-        req.deny(401, "Unauthorized");
-        return;
-    }
-
-    if ("status" in claimed && claimed.status === "cancelled") {
-        const reason = (claimed as any).reason as Reason;
-        const code = CLOSE_CODES[reason] ?? 1000;
-        const wss = createWebSocketServer();
-        wss.handleUpgrade(req, socket, head, (ws) => {
-            try {
-                ws.close(code, reason);
-            } catch {
-                socket.destroy();
-            }
-        });
-        return;
-    }
-
-    const active = claimed as any;
-    const currentWorker = logger.getWorkerIdentity();
-
-    if (active.originWorker === currentWorker) {
-        completeHandoff(ticket, req, socket, head);
-    } else if (clusterIpcSender) {
-        clusterIpcSender(
-            {
-                type: "relayed_tunnel_socket",
-                target: active.originWorker,
-                lifelineWorker: active.lifelineWorker,
-                ticket,
-                head,
-                headers: req.headers,
-            },
-            socket
-        );
-    } else {
-        socket.destroy();
-    }
-}
-
 export function handleWardenIpc(msg: any, handle?: any): void {
     const currentWorker = logger.getWorkerIdentity();
     if (!msg || typeof msg !== "object") return;
@@ -291,9 +267,10 @@ export function handleWardenIpc(msg: any, handle?: any): void {
             });
         }
     } else if (msg.type === "relayed_tunnel_cancel" && msg.target === currentWorker) {
-        const ws = getLocalLifeline(msg.edgeId || "");
-        if (ws) {
-            sendCancelTunnel(ws, msg.ticket, msg.reqId || "", msg.reason);
+        const pending = getPendingOrder(msg.ticket);
+        const ws = pending ? getLocalLifeline(pending.edgeId) : undefined;
+        if (pending && ws) {
+            sendCancelTunnel(ws, msg.ticket, pending.reqId, msg.reason);
         } else {
             deletePendingOrder(msg.ticket);
         }

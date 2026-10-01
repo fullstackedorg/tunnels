@@ -3,12 +3,17 @@ import type { AppConfig } from "../utils/config.ts";
 import { logger } from "../utils/logger.ts";
 import { EdgeLifeline } from "./lifeline.ts";
 import { startEdgePrimary, startEdgeWorker } from "./cluster.ts";
+import { setHeartbeatConfig } from "../ws/heartbeat.ts";
+import { setHookTimeout } from "../utils/hooks.ts";
 
 export interface EdgeInstance {
     stop: () => Promise<void>;
 }
 
 export async function startEdge(config: AppConfig): Promise<EdgeInstance> {
+    setHeartbeatConfig(config.heartbeatInterval, config.heartbeatTimeout);
+    setHookTimeout(config.hookTimeout);
+
     if (config.workers > 1) {
         if (cluster.isPrimary) {
             startEdgePrimary(config);

@@ -10,7 +10,7 @@ import {
 } from "../src/tunnels/registry.ts";
 import { getAvailablePort, createTempDir, cleanupTempDir, jsonFetch } from "./helpers.ts";
 
-test("hub_workers: clustered hub launches with 2 workers and serves requests", async () => {
+test("hub-workers: clustered hub launches with 2 workers and serves requests", async () => {
     const hubPort = await getAvailablePort();
     const dir = createTempDir("hub-cluster-");
 
@@ -115,7 +115,7 @@ test("hub_workers: clustered hub launches with 2 workers and serves requests", a
     }
 });
 
-test("hub_workers: sever_sessions IPC broadcast closes matching sessions", () => {
+test("hub-workers: sever_sessions IPC broadcast closes matching sessions", () => {
     let closed = false;
     registerSession({
         id: "session-cluster-1",
@@ -137,7 +137,7 @@ test("hub_workers: sever_sessions IPC broadcast closes matching sessions", () =>
     assert.equal(closed, true);
 });
 
-test("hub_workers: handleWardenIpc dispatches close_lifeline and failure messages", () => {
+test("hub-workers: handleWardenIpc dispatches close_lifeline and failure messages", () => {
     // Test close_lifeline message handling
     let closeCalled = false;
     handleWardenIpc({

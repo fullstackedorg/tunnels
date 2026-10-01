@@ -38,7 +38,7 @@ When an upgrade presents an edge token:
 1. **Resolve**: look the edge up by token through the [entity cache](entity-schemas.md#token-resolution--cache). Unknown token: `401`. Storage or KV unavailable: `503`.
 2. **Gate**: run `lifeline_connect(req, edge)`. `req.deny()` rejects with the hook's status (default `403`); a throw or `HOOK_TIMEOUT` rejects with `500`. Neither puts the Edge in its revoked state.
 3. **Accept** the upgrade and add the lifeline to the heartbeat sweep.
-4. **Newest wins**: if this Edge already has a lifeline (on this worker, or on another worker according to `edge:<id>:worker`), the older one is closed with `1000 superseded`. Pending orders on the older lifeline fail with `edge_disconnected`. In clustered mode the new lifeline worker sends `close_lifeline { edgeId, reason: "superseded" }` to the old worker through the Primary.
+4. **Newest wins**: if this Edge already has a lifeline (on this worker, or on another worker according to `edge:<id>:worker`), the older one is closed with `1000 superseded`. Pending orders sent on the older lifeline fail with `edge_disconnected`; the older lifeline's cleanup never unregisters the newer lifeline, its presence, or its pending orders. In clustered mode the new lifeline worker sends `close_lifeline { edgeId, reason: "superseded" }` to the old worker through the Primary.
 5. **Version**: if the `version` header differs from `edge.version`, the stored value is updated (asynchronously). The field is informational and read-only through the REST API.
 6. **Register**: `edgeLifelines.set(edge.id, ws)`, write presence immediately (below), and `SADD worker:<bootId>:<workerId>:edges <edgeId>`.
 
@@ -59,10 +59,10 @@ An Edge is **online** when `edge:<id>:worker` exists and its `bootId` equals the
 
 The lifeline runs the [bidirectional heartbeat](../1-concepts/protocol-spec.md#3-heartbeat-all-websocket-connections). When a lifeline closes for any reason (heartbeat timeout, Edge disconnect, supersede, revocation, shutdown), the lifeline worker:
 
-1. Removes it from `edgeLifelines`.
-2. Runs `delIfEquals("edge:<id>:worker", "<bootId>:<workerId>")`, so a newer lifeline registered elsewhere is never unregistered, and `SREM worker:<bootId>:<workerId>:edges <edgeId>`.
-3. Fails every pending order of that lifeline with `edge_disconnected` (unless the close reason was `hub_shutdown`, which is used instead).
-4. Dispatches `lifeline_disconnect(null, edge, reason)` with the lifeline's close reason (`heartbeat_timeout`, `superseded`, `token_rolled`, `edge_deleted`, `hub_shutdown`, or `client_close` when the Edge closed normally).
+1. Removes it from `edgeLifelines` (only if it is still the registered lifeline for that Edge).
+2. Unless a newer lifeline for the same Edge is registered on this worker, runs `delIfEquals("edge:<id>:worker", "<bootId>:<workerId>")`, so a newer lifeline registered elsewhere is never unregistered, and `SREM worker:<bootId>:<workerId>:edges <edgeId>`.
+3. Fails every pending order sent on that lifeline with `edge_disconnected` (unless the close reason was `hub_shutdown`, which is used instead).
+4. Dispatches `lifeline_disconnect(null, edge, reason)` with the lifeline's close reason. When the Hub closed the lifeline, this is the reason the Hub sent (`heartbeat_timeout`, `superseded`, `token_rolled`, `edge_deleted`, `hub_shutdown`), even if the Edge never answered the close handshake; when the Edge closed it, the Edge's reason if it is a taxonomy reason (e.g. `edge_shutdown`), otherwise `client_close`.
 
 Established relayed sessions do not depend on the lifeline and keep running.
 
@@ -77,7 +77,7 @@ Established relayed sessions do not depend on the lifeline and keep running.
     await kv.set(
         `relayed_request:${ticket}`,
         { originWorker, lifelineWorker, edgeId, reqId, tunnelId },
-        CONNECT_TIMEOUT + 2
+        CONNECT_TIMEOUT + 2 // the configured CONNECT_TIMEOUT, in seconds
     );
     relayedRequests.set(ticket, { resolve, reject, lifelineWorker, reqId, deadline });
     ```
@@ -91,6 +91,7 @@ Established relayed sessions do not depend on the lifeline and keep running.
     - **`connect_tunnel_failed`**: the lifeline worker deletes the ticket (`kv.del`), deletes the pending order, and sends `relayed_tunnel_failed` with the Edge's reason, verbatim.
     - **Lifeline lost**: `edge_disconnected`.
     - **Runtime disconnects before handoff**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "client_aborted" }, 5)`), deletes its parked entry, ends the session with `client_aborted`, and sends `relayed_tunnel_cancel { ticket, reason: "client_aborted" }` so the lifeline worker looks up `edgeLifelines.get(edgeId)` and writes `cancel_tunnel`.
+    - **KV unavailable** while reading presence or creating the ticket: `stream_error`.
     - **Deadline**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "connect_timeout" }, 5)`), deletes its parked entry, closes the runtime socket with `connect_timeout`, and sends `relayed_tunnel_cancel { ticket, reason: "connect_timeout" }`.
 
 Pending orders are not given individual timers. Entries past `expiresAt` are ignored and removed by the heartbeat sweep; the sweep delay only affects memory reclamation, never client-visible timing.
@@ -161,6 +162,8 @@ All messages carry `type`, `target` (worker identity), and `ticket` where applic
 
 ### Dead Workers
 
+The Primary initializes the same KV provider as the workers (Redis, or the shared file KV in test mode) so that it can clean up after them.
+
 When the Primary cannot deliver a message because the target worker is gone:
 
 - A migrating socket is destroyed.
@@ -191,7 +194,7 @@ Sessions owned by the dead worker end when their sockets close. Edges whose life
 3. All sessions relayed through that Edge are closed with the same reason (via `sever_sessions`).
 4. The Edge enters its [revoked state](../2-nodes/edge.md#revocation-handling). Further attempts with the old token get `401`.
 
-On Hub shutdown, lifelines are closed with `1001 hub_shutdown`; Edges reconnect with backoff.
+On Hub shutdown, every pending order on this worker's lifelines is cancelled (`cancel_tunnel` with `hub_shutdown`), parked relayed requests fail with `hub_shutdown`, and lifelines are closed with `1001 hub_shutdown`; Edges reconnect with backoff.
 
 ---
 

@@ -39,7 +39,7 @@ Handlers registered for the same hook run sequentially, in registration order.
 | `tunnel_connected`, `edge_tunnel_connected`                                                                                                 | Yes, before streams resume           | Yes                       | Fail-open: logged; the session proceeds                                     | No       |
 | Telemetry hooks (`tunnel_start`, `tunnel_end`, `lifeline_disconnect`, `edge_tunnel_start`, `edge_tunnel_timeout`, `edge_tunnel_end`, `log`) | No: dispatched after the core action | No                        | Fail-open: logged                                                           | No       |
 
-- Denial: a Hub hook calls `req.deny(statusCode = 403, reason = "Denied", headers?)`. Use `403` for policy and `429` for rate limits; `401` is reserved for the core (Edges treat it as a revoked credential). An Edge hook calls `context.deny()`; the order fails with `hook_denied`.
+- Denial: a Hub hook calls `req.deny(statusCode = 403, reason = "Denied", options?)`, where `options` is either a plain header map or `{ headers?, fields? }` (see [`req.deny()`](../3-subsystems/http-server.md#reqdenystatuscode--403-reason--denied-options)). Use `403` for policy and `429` for rate limits; `401` is reserved for the core (Edges treat it as a revoked credential). An Edge hook calls `context.deny()`; the order fails with `hook_denied`.
 - After each gating handler the core checks `req.denied` / `context.denied` and stops at the first denial.
 - A hanging telemetry handler never delays a session, because telemetry hooks are not awaited on the data path.
 
@@ -102,7 +102,13 @@ export interface IncomingMessageWithDeny extends IncomingMessage {
     clientIp: string; // see HTTP Server: Client IP Resolution
     correlationId?: string; // client x-request-id, if any
     denied: boolean;
-    deny(statusCode?: number, reason?: string, headers?: Record<string, string>): void;
+    deny(
+        statusCode?: number,
+        reason?: string,
+        options?:
+            | Record<string, string>
+            | { headers?: Record<string, string>; fields?: Record<string, string> }
+    ): void;
 }
 
 export interface EdgeRequestContext {
@@ -150,7 +156,7 @@ unsubscribe(); // removes the handler
 Plugins and event listeners can terminate active sessions programmatically across the cluster:
 
 ```typescript
-import { severSessions } from "../src/handlers/tunnel.ts";
+import { severSessions } from "../src/tunnels/registry.ts";
 
 // Immediately terminate all sessions for a specific tunnel
 const count = await severSessions({ tunnelId: "target-tunnel-id" }, "token_rolled");

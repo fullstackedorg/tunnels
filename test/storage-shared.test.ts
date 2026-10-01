@@ -9,7 +9,7 @@ import { parseConfig } from "../src/utils/config.ts";
 import { clearHooks } from "../src/utils/hooks.ts";
 import { getAvailablePort, createTempDir, cleanupTempDir, jsonFetch } from "./helpers.ts";
 
-test("storage_shared: shared mode synchronizes across two provider instances", async () => {
+test("storage-shared: shared mode synchronizes across two provider instances", async () => {
     const dir = createTempDir("storage-shared-");
     const p1 = new FilesystemStorageProvider(dir, true);
     const p2 = new FilesystemStorageProvider(dir, true);
@@ -54,7 +54,7 @@ test("storage_shared: shared mode synchronizes across two provider instances", a
     }
 });
 
-test("storage_shared: stale lock breaking when lock file is older than 5s", async () => {
+test("storage-shared: stale lock breaking when lock file is older than 5s", async () => {
     const dir = createTempDir("stale-lock-");
     const lockPath = path.join(dir, "store.lock");
 
@@ -82,7 +82,7 @@ test("storage_shared: stale lock breaking when lock file is older than 5s", asyn
     }
 });
 
-test("storage_shared: reloadIfChanged detects direct file modification on disk", async () => {
+test("storage-shared: reloadIfChanged detects direct file modification on disk", async () => {
     const dir = createTempDir("reload-disk-");
     const storePath = path.join(dir, "store.json");
     const provider = new FilesystemStorageProvider(dir, true);
@@ -111,7 +111,7 @@ test("storage_shared: reloadIfChanged detects direct file modification on disk",
     }
 });
 
-test("storage_shared: token collision throws Conflict in storage and returns 409 Conflict in API", async () => {
+test("storage-shared: token collision throws Conflict in storage and returns 409 Conflict in API", async () => {
     clearHooks();
     const dir = createTempDir("token-conflict-");
     const provider = new FilesystemStorageProvider(dir, true);
@@ -163,7 +163,7 @@ test("storage_shared: token collision throws Conflict in storage and returns 409
             },
         });
         assert.equal(res.status, 409);
-        assert.ok(res.data.error.includes("Conflict"));
+        assert.deepEqual(res.data, { error: "Conflict" });
     } finally {
         setStorage(null);
         await hub.close();

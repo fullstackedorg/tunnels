@@ -1,7 +1,9 @@
 import type { Duplex } from "node:stream";
 import type { IncomingMessage } from "node:http";
-import type { Reason } from "../constants.ts";
+import type { IncomingMessageWithDeny } from "../http/deny.ts";
+import { CLOSE_CODES, type Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
+import { claimTicket } from "./tickets.ts";
 import { createWebSocketServer } from "../ws/index.ts";
 import { createWsDuplex } from "../utils/ws-stream.ts";
 import { registerHeartbeat } from "../ws/heartbeat.ts";
@@ -116,4 +118,64 @@ export function handleMigratedSocket(
     } as unknown as IncomingMessage;
 
     completeHandoff(ticket, reqAdapter, socket, head);
+}
+
+/** Relayed socket arrival (tmp_ ticket): claim, then hand off locally or migrate. */
+export async function wardenRelayedSocket(
+    req: IncomingMessageWithDeny,
+    socket: Duplex,
+    head: Buffer
+): Promise<void> {
+    const ticket = req.headers.authorization;
+    if (!ticket || !ticket.startsWith("tmp_")) {
+        req.deny(401, "Unauthorized");
+        return;
+    }
+
+    let claimed;
+    try {
+        claimed = await claimTicket(ticket);
+    } catch {
+        req.deny(503, "Service Unavailable");
+        return;
+    }
+    if (!claimed) {
+        req.deny(401, "Unauthorized");
+        return;
+    }
+
+    if ("status" in claimed && claimed.status === "cancelled") {
+        const reason = (claimed as any).reason as Reason;
+        const code = CLOSE_CODES[reason] ?? 1000;
+        const wss = createWebSocketServer();
+        wss.handleUpgrade(req, socket, head, (ws) => {
+            try {
+                ws.close(code, reason);
+            } catch {
+                socket.destroy();
+            }
+        });
+        return;
+    }
+
+    const active = claimed as any;
+    const currentWorker = logger.getWorkerIdentity();
+
+    if (active.originWorker === currentWorker) {
+        completeHandoff(ticket, req, socket, head);
+    } else if (clusterIpcSender) {
+        clusterIpcSender(
+            {
+                type: "relayed_tunnel_socket",
+                target: active.originWorker,
+                lifelineWorker: active.lifelineWorker,
+                ticket,
+                head,
+                headers: req.headers,
+            },
+            socket
+        );
+    } else {
+        socket.destroy();
+    }
 }

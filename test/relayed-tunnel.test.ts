@@ -13,7 +13,7 @@ import {
     jsonFetch,
 } from "./helpers.ts";
 
-test("relayed_tunnel: end-to-end relayed data streaming through Edge lifeline", async () => {
+test("relayed-tunnel: end-to-end relayed data streaming through Edge lifeline", async () => {
     clearHooks();
     const echo = await createTestEchoServer();
     const hubPort = await getAvailablePort();
@@ -112,7 +112,7 @@ test("relayed_tunnel: end-to-end relayed data streaming through Edge lifeline", 
     }
 });
 
-test("relayed_tunnel: target dial failure before handoff sends 1014 target_unreachable", async () => {
+test("relayed-tunnel: target dial failure before handoff sends 1014 target_unreachable", async () => {
     clearHooks();
     const deadPort = await getAvailablePort();
     const hubPort = await getAvailablePort();
@@ -184,7 +184,7 @@ test("relayed_tunnel: target dial failure before handoff sends 1014 target_unrea
     }
 });
 
-test("relayed_tunnel: edge gating hook denial returns hook_denied and error returns hook_error", async () => {
+test("relayed-tunnel: edge gating hook denial returns hook_denied and error returns hook_error", async () => {
     clearHooks();
     const hubPort = await getAvailablePort();
     const dir = createTempDir("relayed-hook-");
@@ -270,7 +270,7 @@ test("relayed_tunnel: edge gating hook denial returns hook_denied and error retu
     }
 });
 
-test("relayed_tunnel: cancel_tunnel order cancels in-flight dial and emits edge_tunnel_end", async () => {
+test("relayed-tunnel: cancel_tunnel order cancels in-flight dial and emits edge_tunnel_end", async () => {
     clearHooks();
     const hubPort = await getAvailablePort();
     const dir = createTempDir("relayed-cancel-");
