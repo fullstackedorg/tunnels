@@ -159,7 +159,7 @@ The project uses standard scripts for all routine tasks:
         "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
         "test": "TEST=1 node --test test/*.test.ts",
         "test:coverage": "TEST=1 node --test --experimental-test-coverage test/*.test.ts",
-        "test:integration": "docker compose -f docker-compose.test.yml up -d && TEST=1 node --test test/integration/*.test.ts"
+        "test:integration": "node scripts/test-integration.ts"
     },
     "prettier": {
         "tabWidth": 4,
