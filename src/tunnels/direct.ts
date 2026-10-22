@@ -23,6 +23,8 @@ export async function connectDirectTarget(
         const socket = net.createConnection({
             host: internalHost,
             port: internalPort,
+            // Small sequential writes (e.g. Postgres Parse/Bind/Execute) must not wait on Nagle.
+            noDelay: true,
         });
 
         const timer = setTimeout(() => {

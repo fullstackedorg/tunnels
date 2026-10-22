@@ -129,6 +129,8 @@ export async function processEdgeOrder(
         const s = net.createConnection({
             host: order.tunnel.internalHost,
             port: order.tunnel.internalPort,
+            // Small sequential writes (e.g. Postgres Parse/Bind/Execute) must not wait on Nagle.
+            noDelay: true,
         });
         targetSocket = s;
 
