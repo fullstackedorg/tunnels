@@ -22,6 +22,8 @@ The KV store holds short-lived coordination data: tickets, Edge presence, and th
 ```typescript
 export interface KVProvider {
     get<T = any>(key: string): Promise<T | null>;
+    /** Reads several keys at once (one round trip); a missing key reads as null. */
+    mget<T = any>(keys: string[]): Promise<(T | null)[]>;
     /** ttlSeconds omitted = no expiry. */
     set(key: string, value: any, ttlSeconds?: number): Promise<void>;
     /** Sets only if the key does not exist. Returns true if written. */
@@ -65,7 +67,7 @@ Keys are namespaced by their first segment (`relayed_request`, `edge`, `worker`,
 ### `RedisKVProvider`
 
 - Used when `REDIS_URL` is set; mandatory when `WORKERS > 1`.
-- `set` with `EX`, `setNX` with `SET NX EX`, native `GETDEL`, multi-key `DEL`, `SADD` / `SREM` / `SMEMBERS`, and a Lua script for `delIfEquals`:
+- `mget` with `MGET`, `set` with `EX`, `setNX` with `SET NX EX`, native `GETDEL`, multi-key `DEL`, `SADD` / `SREM` / `SMEMBERS`, and a Lua script for `delIfEquals`:
     ```lua
     if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end
     ```

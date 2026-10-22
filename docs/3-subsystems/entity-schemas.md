@@ -87,6 +87,7 @@ Handshakes resolve tokens through the KV store to avoid a storage query per conn
 | `entity:tunnel:<token>` / `entity:edge:<token>` | Full entity | `ENTITY_CACHE_TTL` (default 60s)  |
 | `entity:miss:<token>`                           | `1`         | `NEGATIVE_CACHE_TTL` (default 5s) |
 
+- Both keys are read in one round trip (`MGET entity:miss:<token> entity:<table>:<token>`); a tombstone wins over a positive entry.
 - Positive entries are written with `SET NX` on read-through and updated directly on mutation.
 - Negative entries stop repeated invalid tokens from reaching storage on every attempt.
 - If storage or KV is unavailable, resolution fails with `503`, never `401`.

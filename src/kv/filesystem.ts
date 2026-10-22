@@ -124,6 +124,19 @@ export class FileKVProvider implements KVProvider {
         }
     }
 
+    async mget<T = any>(keys: string[]): Promise<(T | null)[]> {
+        const unlock = await this.acquireLock();
+        try {
+            const data = this.readData();
+            return keys.map((key) => {
+                const entry = data.entries[key];
+                return entry && !this.isExpired(entry) ? (entry.value as T) : null;
+            });
+        } finally {
+            unlock();
+        }
+    }
+
     async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
         const unlock = await this.acquireLock();
         try {

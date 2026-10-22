@@ -64,6 +64,13 @@ export class RedisKVProvider implements KVProvider {
         return deserializeValue<T>(raw);
     }
 
+    async mget<T = any>(keys: string[]): Promise<(T | null)[]> {
+        if (keys.length === 0) return [];
+        await this.ensureConnected();
+        const raws = await this.client.mGet(keys);
+        return raws.map((raw) => deserializeValue<T>(raw));
+    }
+
     async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
         await this.ensureConnected();
         const valStr = serializeValue(value);

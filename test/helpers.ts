@@ -141,6 +141,8 @@ export class SpyKV implements KVProvider {
     inner: KVProvider;
     sets: Array<{ key: string; value: any; ttl?: number }> = [];
     failKey: (key: string) => boolean = () => false;
+    /** Keys of every read (get or mget), one entry per call. */
+    reads: string[][] = [];
 
     constructor(inner: KVProvider) {
         this.inner = inner;
@@ -156,7 +158,13 @@ export class SpyKV implements KVProvider {
 
     async get<T = any>(key: string): Promise<T | null> {
         this.check(key);
+        this.reads.push([key]);
         return this.inner.get<T>(key);
+    }
+    async mget<T = any>(keys: string[]): Promise<(T | null)[]> {
+        keys.forEach((key) => this.check(key));
+        this.reads.push(keys);
+        return this.inner.mget<T>(keys);
     }
     async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
         this.check(key);

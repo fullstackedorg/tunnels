@@ -1,5 +1,7 @@
 export interface KVProvider {
     get<T = any>(key: string): Promise<T | null>;
+    /** Reads several keys at once (one round trip); a missing key reads as null. */
+    mget<T = any>(keys: string[]): Promise<(T | null)[]>;
     /** ttlSeconds omitted = no expiry. */
     set(key: string, value: any, ttlSeconds?: number): Promise<void>;
     /** Sets only if the key does not exist. Returns true if written. */

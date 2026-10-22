@@ -24,6 +24,25 @@ function runKVSuite(
         }
     });
 
+    test(`kv [${name}]: mget reads keys in order, missing and expired as null`, async () => {
+        const { provider, cleanup } = await getProvider();
+        try {
+            assert.deepEqual(await provider.mget([]), []);
+            await provider.set("m1", { a: 1 });
+            await provider.set("m3", "three");
+            await provider.set("m4", 1, 0.001);
+            await new Promise((r) => setTimeout(r, 20));
+            assert.deepEqual(await provider.mget(["m1", "m2", "m3", "m4"]), [
+                { a: 1 },
+                null,
+                "three",
+                null,
+            ]);
+        } finally {
+            await cleanup();
+        }
+    });
+
     test(`kv [${name}]: setNX semantics`, async () => {
         const { provider, cleanup } = await getProvider();
         try {

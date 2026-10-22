@@ -38,14 +38,14 @@ export async function resolveToken(token: string): Promise<ResolveTokenResult | 
     }
 
     try {
-        // 1. Check negative cache
-        const isMiss = await kv.get(`entity:miss:${token}`);
+        // 1-2. Negative and positive cache in one round trip; a tombstone wins.
+        const [isMiss, cached] = await kv.mget<any>([
+            `entity:miss:${token}`,
+            `entity:${entityType}:${token}`,
+        ]);
         if (isMiss !== null) {
             return null;
         }
-
-        // 2. Check positive cache
-        const cached = await kv.get<any>(`entity:${entityType}:${token}`);
         if (cached) {
             return { type: entityType, entity: cached };
         }

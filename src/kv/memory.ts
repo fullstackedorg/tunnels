@@ -56,6 +56,10 @@ export class MemoryKVProvider implements KVProvider {
         return this.clone(entry.value);
     }
 
+    async mget<T = any>(keys: string[]): Promise<(T | null)[]> {
+        return Promise.all(keys.map((key) => this.get<T>(key)));
+    }
+
     async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
         const expiresAt = ttlSeconds ? Date.now() + ttlSeconds * 1000 : undefined;
         this.entries.set(key, { value: this.clone(value), expiresAt });

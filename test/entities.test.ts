@@ -140,3 +140,42 @@ test("entities: ENTITY_CACHE_TTL and NEGATIVE_CACHE_TTL are applied to the token
         await h.close();
     }
 });
+
+test("entities: a cached token resolves with a single KV read", async () => {
+    const dir = createTempDir("entity-mget-");
+    const testStorage = new FilesystemStorageProvider(dir);
+    const spy = new SpyKV(new MemoryKVProvider());
+    setStorage(testStorage);
+    setKV(spy);
+
+    try {
+        const added = (await testStorage.add("tunnel", {
+            token: "tun_mget_token",
+            name: "MGET Tunnel",
+            internalHost: "127.0.0.1",
+            internalPort: 8080,
+            edgeId: null,
+            metadata: {},
+        })) as Tunnel;
+        assert.ok(await resolveToken(added.token)); // warms the positive cache
+
+        spy.reads = [];
+        const hit = await resolveToken(added.token);
+        assert.equal(hit?.entity.id, added.id);
+        assert.deepEqual(spy.reads, [
+            [`entity:miss:${added.token}`, `entity:tunnel:${added.token}`],
+        ]);
+
+        // A tombstone still wins over a positive entry, in the same single read.
+        await spy.set(`entity:miss:${added.token}`, 1, 5);
+        spy.reads = [];
+        assert.equal(await resolveToken(added.token), null);
+        assert.equal(spy.reads.length, 1);
+    } finally {
+        await testStorage.close();
+        await spy.close();
+        setStorage(null);
+        setKV(null);
+        cleanupTempDir(dir);
+    }
+});
