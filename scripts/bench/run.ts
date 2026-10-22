@@ -5,6 +5,7 @@
  *
  *   node scripts/bench/run.ts --mode rr --clients 1,16,64 --duration 10 --size 64
  *   node scripts/bench/run.ts --mode rr --clients 64 --bulk 4         # plus 4 bulk streams
+ *   node scripts/bench/run.ts --mode rr --clients 16 --frames 4       # 4 frames per request
  *   node scripts/bench/run.ts --mode connect --clients 4 --pace 5     # ~600 new tunnels/s
  *   node scripts/bench/run.ts --redis-url redis://:secret@127.0.0.1:6379 --cpu-prof /tmp/prof
  */
@@ -23,6 +24,7 @@ const { values: opts } = parseArgs({
         duration: { type: "string", default: "10" },
         warmup: { type: "string", default: "2" },
         size: { type: "string", default: "64" },
+        frames: { type: "string", default: "1" },
         pace: { type: "string", default: "0" },
         threads: { type: "string", default: "4" },
         "redis-url": { type: "string" },
@@ -109,6 +111,7 @@ const job = {
     token,
     mode: opts.mode,
     size: Number(opts.size),
+    frames: Number(opts.frames),
     warmupMs,
     durationMs,
     paceMs: Number(opts.pace),

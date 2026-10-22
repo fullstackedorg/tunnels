@@ -14,6 +14,8 @@ interface Job {
     clients: number;
     mode: "rr" | "bulk" | "connect";
     size: number;
+    /** rr mode: frames each request is split into, sent back to back (like a driver's writes). */
+    frames: number;
     warmupMs: number;
     durationMs: number;
     /** connect mode: pause between connections, in ms (loopback ephemeral ports run out fast). */
@@ -60,7 +62,8 @@ function roundTrip(ws: WebSocket, payload: Buffer): Promise<void> {
         const onClose = () => reject(new Error("closed"));
         ws.on("message", onMessage);
         ws.once("close", onClose);
-        ws.send(payload);
+        const step = Math.ceil(payload.length / job.frames);
+        for (let i = 0; i < payload.length; i += step) ws.send(payload.subarray(i, i + step));
     });
 }
 
