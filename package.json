@@ -23,6 +23,7 @@
         "arrowParens": "always"
     },
     "dependencies": {
+        "bufferutil": "^4.1.0",
         "drizzle-orm": "^0.38.0",
         "pg": "^8.13.0",
         "redis": "^4.7.0",
