@@ -3,6 +3,7 @@ process.env.TEST = "1";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import child_process from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { after } from "node:test";
@@ -26,9 +27,61 @@ try {
     });
 } catch {}
 
+const RUNTIME_DIR = path.resolve(__dirname, "../../../integration/fullstacked");
+const BUILD_STAMP = path.join(RUNTIME_DIR, "core/bin/.integration-build");
+const BUILD_LOCK = path.join(RUNTIME_DIR, "core/bin/.integration-build.lock");
+
+/**
+ * What the core and the node binding were built from: the submodule commit plus its uncommitted
+ * changes. A runtime checked out at another commit than its build speaks another bridge protocol
+ * (e.g. the stream-id width), and its streaming tests hang instead of failing.
+ */
+function runtimeSourceState(): string | null {
+    try {
+        const git = (args: string[]) =>
+            child_process.execFileSync("git", ["-C", RUNTIME_DIR, ...args], { encoding: "utf-8" });
+        const head = git(["rev-parse", "HEAD"]).trim();
+        const diff = git(["diff", "HEAD", "--", "core", "platform/node", "types", "version.ts"]);
+        return `${head} ${crypto.createHash("sha256").update(diff).digest("hex")}`;
+    } catch {
+        return null; // not a git checkout: use the build as it is
+    }
+}
+
+/** Rebuilds the submodule's core and node binding when they don't match its source (once, under a lock). */
+async function ensureRuntimeBuilt() {
+    const state = runtimeSourceState();
+    const built = () => (fs.existsSync(BUILD_STAMP) ? fs.readFileSync(BUILD_STAMP, "utf-8") : "");
+    if (!state || built() === state) return;
+    fs.mkdirSync(path.dirname(BUILD_LOCK), { recursive: true });
+    for (const deadline = Date.now() + 10 * 60_000; ; ) {
+        try {
+            fs.mkdirSync(BUILD_LOCK);
+            break;
+        } catch {
+            // another test file is building it
+            if (built() === state) return;
+            if (Date.now() > deadline) throw new Error(`Timed out waiting for ${BUILD_LOCK}`);
+            await new Promise((r) => setTimeout(r, 1000));
+        }
+    }
+    try {
+        if (built() === state) return;
+        console.log(`[integration] rebuilding integration/fullstacked (core + node binding) for ${state.slice(0, 12)}`);
+        child_process.execSync("npm run build && npm run build -w platform/node", {
+            cwd: RUNTIME_DIR,
+            stdio: "inherit",
+        });
+        fs.writeFileSync(BUILD_STAMP, state);
+    } finally {
+        fs.rmSync(BUILD_LOCK, { recursive: true, force: true });
+    }
+}
+
 export async function getFullStackedRuntime() {
     if (!fullstackedInstance) {
         fs.mkdirSync(TMP_DIR, { recursive: true });
+        await ensureRuntimeBuilt();
         const nodeMod = (await import(
             "../../../integration/fullstacked/platform/node/src/index.ts" as any
         )) as any;
