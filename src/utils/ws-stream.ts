@@ -1,4 +1,4 @@
-import type { Duplex } from "node:stream";
+import type { Duplex, Writable } from "node:stream";
 import { createWebSocketStream, type WebSocket } from "ws";
 import { CLOSE_CODES, type Reason } from "../constants.ts";
 
@@ -69,6 +69,25 @@ export function createWsDuplex(ws: WebSocket): Duplex {
     };
 
     return duplex;
+}
+
+/**
+ * Corks `target` while the frames of one read of the WebSocket are delivered, so a burst of small
+ * frames (a driver's back-to-back writes) reaches the target in one write instead of one each.
+ * Must see each frame before the duplex does, hence prependListener.
+ */
+export function coalesceFrameWrites(ws: WebSocket, target: Writable): void {
+    let corked = false;
+    const uncork = () => {
+        corked = false;
+        target.uncork();
+    };
+    ws.prependListener("message", () => {
+        if (corked) return;
+        corked = true;
+        target.cork();
+        process.nextTick(uncork);
+    });
 }
 
 /**

@@ -6,7 +6,11 @@ import type { Tunnel } from "../entities/schema.ts";
 import { isReason, type Reason } from "../constants.ts";
 import { unregisterSession } from "./registry.ts";
 import { runAwaitedHook, dispatchTelemetry } from "../utils/hooks.ts";
-import { getPeerCloseReason, performSymmetricalTeardown } from "../utils/ws-stream.ts";
+import {
+    coalesceFrameWrites,
+    getPeerCloseReason,
+    performSymmetricalTeardown,
+} from "../utils/ws-stream.ts";
 import { getLocalCloseReason } from "../ws/heartbeat.ts";
 
 export interface SpliceOptions {
@@ -52,6 +56,7 @@ export function spliceTunnelStreams(options: SpliceOptions): SessionTeardown {
         (runtimeDuplex as any)._closeReason = targetEndReason();
     });
 
+    coalesceFrameWrites(runtimeWs, targetStream);
     pipeline(runtimeDuplex, targetStream, (err) => {
         teardown(err ? "stream_error" : "client_close", err ?? undefined);
     });

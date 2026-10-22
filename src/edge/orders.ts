@@ -4,7 +4,7 @@ import WebSocket from "ws";
 import { CLOSE_CODES, isReason, type Reason } from "../constants.ts";
 import type { ConnectTunnelOrder } from "../warden/types.ts";
 import { runGatingHook, runAwaitedHook, dispatchTelemetry } from "../utils/hooks.ts";
-import { createWsDuplex } from "../utils/ws-stream.ts";
+import { coalesceFrameWrites, createWsDuplex } from "../utils/ws-stream.ts";
 import { getLocalCloseReason, registerHeartbeat } from "../ws/heartbeat.ts";
 import { classifyDialError } from "../utils/net.ts";
 
@@ -304,6 +304,7 @@ export async function processEdgeOrder(
         },
     });
 
+    coalesceFrameWrites(ws, target);
     pipeline(relayedDuplex, target, (err) => {
         teardown(err ? "stream_error" : "client_close", err ?? undefined);
     });
