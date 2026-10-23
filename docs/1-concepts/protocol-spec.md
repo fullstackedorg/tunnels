@@ -3,13 +3,15 @@
 ```mermaid
 flowchart TD
     subgraph Handshake["Upgrade Handshake (Hub)"]
-        Req["HTTP GET Upgrade"] --> Path{"Path '/' or registered\nWebSocket route?"}
-        Path -->|"No"| R404["404 Not Found"]
-        Path -->|"Yes"| HubUpgrade{"hub_upgrade hook"}
+        Req["HTTP GET Upgrade"] --> HubUpgrade{"hub_upgrade hook\n(every upgrade, any path)"}
         HubUpgrade -->|"deny()"| RDeny["403 / 429 (hook status)"]
         HubUpgrade -->|"threw / timed out"| R500["500 Internal Server Error"]
-        HubUpgrade -->|"pass"| Classify{"Authorization prefix"}
+        HubUpgrade -->|"pass"| Path{"Path"}
+        Path -->|"Registered WebSocket route"| Custom["Custom route handler"]
+        Path -->|"Other non-root path"| R404["404 Not Found"]
+        Path -->|"'/'"| Classify{"Authorization prefix"}
 
+        Classify -->|"missing / unknown"| R401
         Classify -->|"edg_ (edge)"| ResolveEdg{"Resolve edge token"}
         ResolveEdg -->|"Unknown"| R401["401 Unauthorized"]
         ResolveEdg -->|"Storage/KV down"| R503["503 Service Unavailable"]
@@ -233,7 +235,7 @@ The bidirectional heartbeat runs on **every** WebSocket connection: lifelines, r
 - Any frame received (pong, ping, text, or binary) refreshes the peer's `lastReceived` timestamp.
 - A connection is dead when `now - lastReceived >= HEARTBEAT_TIMEOUT` (default 30s). A close frame with code `1011` and reason `heartbeat_timeout` is sent and the underlying socket is destroyed after a 1-second grace period without waiting for the dead peer's close handshake. Local close handling (`lifeline_disconnect`, `tunnel_end`, Edge reconnect) reports `heartbeat_timeout`.
 - `HEARTBEAT_INTERVAL` can be shortened for infrastructure with more aggressive idle timeouts, or lengthened to reduce control traffic. It must stay well below `HEARTBEAT_TIMEOUT`.
-- Heartbeats are driven by one shared sweep timer per process that iterates over open connections; no timer is allocated per connection.
+- Heartbeats are driven by one shared sweep timer per process that iterates over open connections; no timer is allocated per connection. A Hub that is shutting down stops this timer before draining its sessions (see [Graceful Shutdown](../2-nodes/hub.md#graceful-shutdown)).
 - Ping and pong are control frames: they never appear in the byte stream delivered to either end.
 - Target sockets are plain TCP and never cross a WebSocket proxy; they use OS-level TCP keepalive (`socket.setKeepAlive(true, 60000)`).
 
@@ -280,9 +282,9 @@ A runtime upgrade with a tunnel token opens a **tunnel session**: one WebSocket 
     | `6`  | `RESET`  | Both                      | utf-8 [close reason](#close-reason-taxonomy): the stream is over (after a `FIN`, see below)   |
 
 2. The opener (the runtime on a tunnel session, the Hub on a relay session) picks stream ids, increasing, and never reuses one on a session. The runtime may send `DATA` right after `OPEN`, before `OPENED`; the Hub holds those bytes until the target is spliced (the Hub itself sends no `DATA` on a relay stream before `OPENED`). A failed dial answers `RESET` with the reason instead of `OPENED`. A session over its stream limit (256, on tunnel sessions and relay sessions alike) answers `RESET stream_limit`.
-3. **Flow control**: each side may send 256 KiB of `DATA` per stream beyond what the other side credited back; the receiver sends `WINDOW` as its consumer reads, so one slow stream never stalls the others on the WebSocket. A receiver that gets more `DATA` on a stream than it has credited ends that stream with `RESET stream_error` (the session and its other streams carry on), so a peer ignoring flow control cannot grow the receiver's buffers.
+3. **Flow control**: each side may send 256 KiB of `DATA` per stream beyond what the other side credited back; the receiver sends `WINDOW` as its consumer reads, so one slow stream never stalls the others on the WebSocket. A receiver that gets more `DATA` on a stream than it has credited ends that stream with `RESET stream_error` (the session and its other streams carry on), so a peer ignoring flow control cannot grow one stream's buffer beyond 256 KiB. The bound is per stream only: a stream still waiting for its target (before `OPENED`) holds up to 256 KiB of early `DATA`, a tunnel session up to 256 such streams (64 MiB), and nothing in the core limits the number of sessions per token or per client, or the Hub's total buffered bytes.
 4. `permessage-deflate` is disabled on every WebSocket. The Hub and the Edge accept WebSocket messages up to 64 KiB (a frame is at most 32 KiB of `DATA` plus its 5-byte header); a larger message closes the WebSocket with `1009 Message Too Big`.
-5. The port a driver uses on the virtual host returned by `tunnel.register` is a runtime-side detail and is never sent to the Hub. The target is always `internalHost:internalPort` of the tunnel resolved from the token. `tunnel.register` itself takes the Hub's hostname as `host` (for example `tunnels.example.com`), with a separate `port` (default `443`, or `80` with `unsecure`) and `unsecure: true` for a plain `ws://` Hub.
+5. The port a driver uses on the virtual host returned by `tunnel.register` is a runtime-side detail and is never sent to the Hub. The target is always `internalHost:internalPort` of the tunnel resolved from the token. `tunnel.register` itself takes the Hub's hostname as `host` (for example `tunnels.example.com`), with a separate `port` (default `443`, or `80` with `unsecure`) and `unsecure: true` for a plain `ws://` Hub. The runtime also accepts a `path` option, sent as the upgrade's request path; the Hub serves tunnel sessions on the root path `/` only (any other path is `404`, or goes to a custom WebSocket route registered on it, never to the Tunnel Handler), so leave `path` unset unless a reverse proxy rewrites it to `/`.
 6. Closing the WebSocket ends every stream on it with the close reason. Severing (revocation, quota, tunnel updates) closes whole tunnel sessions; severing an Edge also closes its relay sessions.
 
 ### Symmetrical Teardown (No Half-Close)

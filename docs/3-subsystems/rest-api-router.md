@@ -54,11 +54,13 @@ Payloads are validated before the pre-mutation hook and **re-validated after it*
 | `version` (edge) | Read-only; set from the Edge's `version` header (currently the fixed string `0.1.0`).       |
 | `name`           | String, 1-128 characters. Descriptive label. Names do not need to be unique.                |
 | `internalHost`   | Hostname, IPv4, or IPv6 literal.                                                            |
-| `internalPort`   | Integer 1-65535.                                                                            |
+| `internalPort`   | Integer 1-65535. Checked with `Number(value)`, so a numeric string such as `"5432"` passes. |
 | `edgeId`         | `null` or the id of an existing edge (`400 {"error":"Invalid edge identifier"}` otherwise). |
 | `metadata`       | JSON object, at most 16 KB serialized.                                                      |
 
 ### Update Semantics
+
+A numeric-string `internalPort` is passed to storage as sent. PostgreSQL stores it as an integer, but the filesystem provider keeps the string: a relayed tunnel stored that way fails every stream with `RESET stream_error` (the Edge requires an integer port in the `OPEN` payload). With either provider, an update whose `internalPort` differs from the stored value only in type (`"5432"` against `5432`) counts as a port change and severs the tunnel's sessions. Send `internalPort` as a JSON number.
 
 `PUT` and `PATCH` are aliases and perform a partial merge: omitted fields keep their stored values. `metadata` is merged key by key (`{ ...existing.metadata, ...updates.metadata }`); a key set to `null` is removed. Setting `metadata: null` resets it to `{}`. Setting `edgeId` to `null` turns a relayed tunnel into a direct one.
 
@@ -66,12 +68,12 @@ Payloads are validated before the pre-mutation hook and **re-validated after it*
 
 `GET /tunnels` and `GET /edges` accept:
 
-| Parameter                      | Default  | Description                                                                                                                                                                          |
-| :----------------------------- | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `limit`                        | `100`    | Maximum rows, capped at `1000`.                                                                                                                                                      |
-| `offset`                       | `0`      | Rows to skip.                                                                                                                                                                        |
-| `orderBy`                      | `id:asc` | `<column>:(asc\|desc)`. An unknown column returns `400`.                                                                                                                             |
-| any column or `metadata.<key>` |          | Equality filter. Values are converted to the column's type (e.g. `internalPort=5432` becomes an integer); an unconvertible value or a column the entity does not have returns `400`. |
+| Parameter                      | Default  | Description                                                                                                                                                                                                                                                                                                          |
+| :----------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limit`                        | `100`    | Maximum rows, capped at `1000`.                                                                                                                                                                                                                                                                                      |
+| `offset`                       | `0`      | Rows to skip.                                                                                                                                                                                                                                                                                                        |
+| `orderBy`                      | `id:asc` | `<column>:(asc\|desc)`. An unknown column returns `400`.                                                                                                                                                                                                                                                             |
+| any column or `metadata.<key>` |          | Equality filter. A column the entity does not have returns `400`. Only `internalPort` is converted (to an integer; a non-integer value returns `400`); other values are compared as given. On PostgreSQL a non-UUID value for `id` or `edgeId` is a database error (`500`); the filesystem provider returns no rows. |
 
 The total number of matching rows (within scope) is returned in the `X-Total-Count` header.
 
@@ -86,14 +88,14 @@ Every request first passes `rest_access(req)` (global authentication), then the 
 | List       | `scope_<table>(req, query, "list")` → storage list with `query` → `list_<table>_done(req, items)` → `200`                                                                                                                                                                                   |
 | Read       | `scope_<table>(req, query, "read")` → storage get by id with `query` (`404` if no match) → `read_<table>_done(req, item)` → `200`                                                                                                                                                           |
 | Create     | validate → `create_<table>(req, payload)` → re-validate → insert (within `storage.transaction`) → `create_<table>_done(req, item)` → `201`                                                                                                                                                  |
-| Update     | `scope_<table>(req, query, "update")` → within `storage.transaction`: get with `query` (`404`) → validate → `update_<table>(req, item, updates)` → re-validate → update → commit → write-through cache → sever sessions if target changed → `update_<table>_done(req, item)` → `200`        |
+| Update     | `scope_<table>(req, query, "update")` → validate → within `storage.transaction`: get with `query` (`404`) → `update_<table>(req, item, updates)` → re-validate → update → commit → write-through cache → sever sessions if target changed → `update_<table>_done(req, item)` → `200`        |
 | Delete     | `scope_<table>(req, query, "delete")` → within `storage.transaction`: get with `query` (`404`) → `delete_<table>(req, item)` → delete → commit → evict cache & write tombstone → sever sessions → `delete_<table>_done(req, item)` → `204`                                                  |
 | Roll token | `scope_<table>(req, query, "roll_token")` → within `storage.transaction`: get with `query` (`404`) → `roll_token_<table>(req, item)` → generate new token → update → commit → write-through new token & tombstone old token → sever sessions → `roll_token_<table>_done(req, item)` → `200` |
 
 Key properties:
 
 - **Scope before fetch**: `scope_<table>` runs before any storage read and adds conditions to `query.where` (e.g. `metadata.userId = <caller>`). Every single-entity fetch and mutation uses that scope, so an entity outside the caller's scope is indistinguishable from a missing one (`404`), with no hook having to remember to deny.
-- **No mutation without passing every gate**: if any gating or scope hook denies, throws, or times out, no storage query or mutation runs.
+- **No mutation without passing every gate**: if any gating or scope hook denies, throws, or times out, no mutation runs. Scope hooks run before any storage query. The pre-mutation hooks of update, delete, and roll token (`update_*`, `delete_*`, `roll_token_*`) run after the scoped fetch, inside the open `storage.transaction` (on PostgreSQL, a database transaction holding a pooled connection for as long as the hook runs, up to `HOOK_TIMEOUT`).
 - **Post-query hooks** (`list_*_done`, `read_*_done`) run before serialization, mutate the result in place, and are **fail-closed**: if one throws, the response is `500` with no data, so a failing redaction hook can never leak rows. They may call `req.deny()`.
 - **Post-mutation hooks** (`create_*_done`, `update_*_done`, `delete_*_done`, `roll_token_*_done`) run after the commit, are awaited (bounded by `HOOK_TIMEOUT`), and are **fail-open**: an error is logged and the response still reports the committed change. They cannot deny.
 

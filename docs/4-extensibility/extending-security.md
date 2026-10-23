@@ -131,6 +131,8 @@ registerHook("tunnel_request", (req) => {
 
 The counters are per process. With `WORKERS > 1` each worker enforces its own limit; for a global limit, keep the counters in Redis (`INCR` + `EXPIRE`).
 
+This limits tunnel **sessions**, not streams: `tunnel_request` runs once per session upgrade, and an accepted session then carries up to 256 streams at once and any number over its lifetime (each driver connection is a stream). No hook can refuse an individual stream (`tunnel_start` is telemetry), so this recipe does not bound how many target connections a token holder opens.
+
 ## Recipe 5: Multi-Tenancy
 
 Tenancy is stored in `metadata`. The scope hook restricts every read and mutation, so entities of other tenants are simply `404`.
@@ -165,10 +167,17 @@ for (const table of ["tunnel", "edge"] as const) {
         payload.metadata = { ...payload.metadata, orgId: user.orgId, userId: user.id };
     });
 
-    // 4. Ownership keys can never be changed by members.
+    // 4. Ownership keys can never be changed by members. `metadata: null` resets metadata to {}
+    //    (dropping orgId / userId), so it is refused rather than passed through.
     registerHook(`update_${table}`, (req, _item, updates) => {
         const user = (req as any).user as User;
-        if (user.role !== "admin" && updates.metadata) {
+        if (user.role === "admin" || !("metadata" in updates)) return;
+        if (updates.metadata === null) {
+            return req.deny(400, "Validation Error", {
+                fields: { metadata: "Cannot reset metadata" },
+            });
+        }
+        if (updates.metadata) {
             delete updates.metadata.orgId;
             delete updates.metadata.userId;
         }
@@ -207,9 +216,13 @@ On the Hub, refuse direct tunnels to sensitive addresses:
 import net from "node:net";
 import { registerHook } from "../src/utils/hooks.ts";
 
+// Node's BlockList also matches IPv4-mapped IPv6 forms (::ffff:127.0.0.1, ::ffff:7f00:1)
+// against these IPv4 rules.
 const blocked = new net.BlockList();
+blocked.addSubnet("0.0.0.0", 8); // "this host": 0.0.0.0 connects to the Hub's own loopback
 blocked.addSubnet("127.0.0.0", 8); // Hub's own loopback
 blocked.addSubnet("169.254.0.0", 16); // link-local, cloud metadata
+blocked.addAddress("::", "ipv6"); // unspecified: connects to the Hub's own loopback
 blocked.addAddress("::1", "ipv6");
 
 function check(req: any, host?: string, edgeId?: string | null) {
@@ -222,7 +235,7 @@ registerHook("update_tunnel", (req, item, u) =>
 );
 ```
 
-Hostnames are resolved at dial time; to cover them too, also resolve and check in `tunnel_request`, or allow only an explicit list of hosts.
+A denylist only covers what it lists: add the Hub's private networks (e.g. `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) as needed. Hostnames are resolved at dial time; to cover them too, also resolve and check in `tunnel_request`. The safest policy is an allowlist of the hosts direct tunnels may reach.
 
 On an Edge, restrict which targets the Hub may ask for, so a compromised Hub cannot reach arbitrary hosts in the private network:
 

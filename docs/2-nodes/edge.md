@@ -144,7 +144,7 @@ IPC messages (all use the `type` discriminator):
 
 ## Shutdown
 
-On `SIGINT` / `SIGTERM` the Edge closes its lifeline with `1001 edge_shutdown`, stops accepting orders, lets streams finish for up to `SHUTDOWN_TIMEOUT`, resets the remaining ones with `edge_shutdown`, closes its relay sessions with `1001 edge_shutdown`, and exits.
+On `SIGINT` / `SIGTERM` the Edge closes its lifeline with `1001 edge_shutdown`, stops accepting orders, lets streams finish for up to `SHUTDOWN_TIMEOUT`, resets the remaining ones with `edge_shutdown`, closes its relay sessions with `1001 edge_shutdown`, and exits. The relay sessions stay open during the drain and the Hub does not know the Edge is leaving (relay sessions do not depend on the lifeline), so it keeps opening new streams on them; the Edge serves those too, and any still open at the end are reset with `edge_shutdown`.
 
 In multi-worker mode the Primary closes the lifeline and forwards the signal to every worker; each worker drains its own streams and relay sessions the same way and exits. The Primary exits once all workers have exited, or `SHUTDOWN_TIMEOUT + 5s` after the signal at the latest.
 

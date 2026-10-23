@@ -245,14 +245,16 @@ In addition to fast multi-worker tests, FullStacked Tunnels requires a robust, z
 
 The integration test suite launches genuine, containerized services using Docker Compose with zero mock layers:
 
-- **MySQL**: Validates relational database wire protocol forwarding, packet boundary handling, and persistent transactional queries piped across tunnels.
-- **Redis**: Validates in-memory caching commands, high-throughput Pub/Sub message channels, connection multiplexing, and distributed cluster coordination.
-- **PostgreSQL**: Validates Hub/Edge persistent metadata, schema migrations, transactional guarantees, and connection pooling.
-- **Basic HTTP Server**: Validates HTTP/1.1 and HTTP/2 handling, chunked transfer encoding, streaming payloads, Server-Sent Events (SSE), and strict header preservation.
-- **Basic Socket Server**: Validates raw TCP socket proxies and WebSocket servers, testing duplex streaming, heartbeats, reconnects, and socket backpressure.
-- **S3 Object Storage via [RustFS](https://github.com/rustfs/rustfs)**: Uses RustFS (high-performance S3-compatible storage written in Rust) to test multipart uploads, chunked binary payloads, bucket management, and presigned URL access over reverse-proxied tunnels.
-- **Git Server**: Validates Git Smart HTTP and SSH/TCP protocols, verifying `git clone`, `git push`, `git pull`, and packfile negotiation over edge-to-hub tunnels.
-- **MongoDB**: Validates native MongoDB wire protocol (OP_MSG, BSON serialization) connection pooling, query cursor streaming, and failover behavior.
+Each service is reached through a direct tunnel and through a tunnel relayed by an Edge:
+
+- **MySQL**: wire protocol forwarding, packet boundaries, and transactions.
+- **Redis**: caching commands, Pub/Sub, and several clients over one tunnel. A separate test exercises the Hub's own Redis KV provider (`MGET`).
+- **PostgreSQL**: connection pooling, DDL, DML, and transactions against a tunneled PostgreSQL target.
+- **Basic HTTP Server**: HTTP/1.1, chunked transfer encoding, Server-Sent Events (SSE), streaming, and header preservation. HTTP/2 is not covered.
+- **Basic Socket Server**: raw TCP duplex streaming and echo, and WebSocket text/binary frames with reconnects.
+- **S3 Object Storage via [RustFS](https://github.com/rustfs/rustfs)**: bucket management, binary payloads, multipart uploads, and presigned URLs.
+- **Git Server**: Git smart HTTP only (`git clone`, `git push`, `git pull`, packfile negotiation); no SSH.
+- **MongoDB**: OP_MSG wire protocol, BSON serialization, query cursor streaming, document operations, and connection pooling. Failover is not covered.
 
 #### 2. Submodule Integration (`fullstackedorg/fullstacked`)
 

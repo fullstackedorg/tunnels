@@ -59,18 +59,33 @@ Put a TLS-terminating reverse proxy in front (see [Deployment Requirement: TLS](
 
 ```yaml
 services:
+    proxy:
+        image: caddy:2-alpine
+        # TLS termination; forwards WebSocket upgrades and sets X-Forwarded-For
+        command: ["caddy", "reverse-proxy", "--from", "tunnels.example.com", "--to", "hub:3000"]
+        ports:
+            - "80:80"
+            - "443:443"
+        volumes:
+            - caddy_data:/data
+        networks:
+            ingress:
+                ipv4_address: 172.30.0.10
+
     hub:
         build:
             context: .
             dockerfile: Dockerfile
-        ports:
-            - "3000:3000"
+        # no published port: only the proxy reaches the Hub
         environment:
             PORT: 3000
             WORKERS: 4
             POSTGRES_URL: "postgresql://postgres:secret@postgres:5432/tunnels"
             REDIS_URL: "redis://:secret@redis:6379"
-            TRUSTED_PROXIES: "172.16.0.0/12"
+            TRUSTED_PROXIES: "172.30.0.10" # the proxy only
+        networks:
+            - ingress
+            - default
         depends_on:
             postgres:
                 condition: service_healthy
@@ -111,9 +126,18 @@ services:
             timeout: 5s
             retries: 5
 
+networks:
+    ingress:
+        ipam:
+            config:
+                - subnet: 172.30.0.0/24
+
 volumes:
     pgdata:
+    caddy_data:
 ```
+
+`TRUSTED_PROXIES` names only the proxy: `X-Forwarded-For` is trusted from no other address, so clients cannot spoof `req.clientIp`. Do not trust a whole Docker range while the Hub's port is published directly, since connections forwarded by Docker can arrive from the bridge gateway.
 
 If a `rest_access` hook requires authentication, adjust the health check accordingly (or register a public route for it).
 
@@ -128,7 +152,7 @@ POSTGRES_URL="postgresql://..." npx drizzle-kit push --config drizzle.config.ts
 
 `drizzle.config.ts` reads the database URL from `POSTGRES_URL`. `drizzle-kit` is a dev dependency: the Docker image (`npm ci --omit=dev`) does not include it, so run the command from a checkout (or a one-off container with dev dependencies), not from the Hub image.
 
-On startup the Hub checks connectivity (`SELECT 1`) and that the `edge` and `tunnel` tables exist; if not, it exits with an error that names the command above.
+On startup the Hub checks connectivity (`SELECT 1`) and that the `edge` and `tunnel` tables exist; if not, it exits with an error that names the command above. With `WORKERS > 1` this check runs in each worker, not the Primary: a worker that fails it (or fails to start for any other reason, such as PostgreSQL unreachable or the port in use) exits, and the Primary forks a replacement at once, with no backoff and no retry limit. The Primary keeps running and re-forking until it is stopped, so watch the logs for `Fatal startup error` and repeated `Forking replacement worker` lines.
 
 ## Provisioning
 
@@ -138,11 +162,12 @@ See the [REST API Reference](../3-subsystems/rest-api-router.md). Tokens are alw
 
 On `SIGINT` / `SIGTERM`:
 
-1. **Stop ingress**: stop accepting connections and upgrades.
+1. **Stop ingress**: stop accepting new TCP connections (and so new upgrades).
 2. **Close lifelines**: every lifeline is closed with `1001 hub_shutdown` and `lifeline_disconnect` fires; streams still waiting for a relay session fail with `hub_shutdown`. Edges reconnect with backoff.
-3. **Drain sessions**: established sessions may continue for up to `SHUTDOWN_TIMEOUT` (default 30s); any still open are then closed with `1001 hub_shutdown`. `tunnel_end` fires for every stream.
-4. **Close relay sessions**: once the runtime sessions they serve are gone, every relay session is closed with `1001 hub_shutdown`.
-5. **Close providers**: `storage.close()` (flushes the filesystem store or ends the PostgreSQL pool) and `kv.close()`.
-6. **Exit**: code `0` if every session ended on its own, `1` if any had to be force-closed.
+3. **Stop the heartbeat sweep**: from here on no pings are sent and no connection is timed out, so a dead peer is only noticed when its socket errors or the drain ends.
+4. **Drain sessions**: wait up to `SHUTDOWN_TIMEOUT` (default 30s) for tunnel **sessions** (WebSockets) to close, then close those still open with `1001 hub_shutdown`. `tunnel_end` fires for every stream. Open sessions keep accepting new streams (`OPEN`) during the drain. The runtime keeps its pooled sessions open as long as the tunnel is registered, so with connected runtimes the drain normally lasts the full `SHUTDOWN_TIMEOUT` and ends with a force-close.
+5. **Close relay sessions**: after the drain, every relay session is closed with `1001 hub_shutdown`.
+6. **Close providers**: `storage.close()` (flushes the filesystem store or ends the PostgreSQL pool) and `kv.close()`.
+7. **Exit**: code `0` if every session closed on its own during the drain, `1` if any had to be force-closed (the usual case while runtimes are connected, see step 4).
 
 In clustered mode the Primary forwards the signal to every worker, each worker runs the steps above, and the Primary exits after all workers have exited: with code `1` if any worker exited with a non-zero code, otherwise `0`. If workers are still alive `SHUTDOWN_TIMEOUT + 5s` after the signal, the Primary exits with code `1`.

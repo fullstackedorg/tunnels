@@ -62,14 +62,14 @@ export interface StorageProvider {
 
 `get`, `getByToken`, `update`, and `remove` return `null` when no row matches the lookup key **and** the optional `query` scope.
 
-### Query Semantics (Identical in Both Providers)
+### Query Semantics
 
-| Operator | Meaning                                                                                                                          |
-| :------- | :------------------------------------------------------------------------------------------------------------------------------- |
-| `eq`     | Equal. Values are converted to the column's type first (integers for `internalPort`, strings for text columns and `metadata.*`). |
-| `neq`    | Value is present and not equal. Rows where the column is `null` or missing never match.                                          |
-| `in`     | `value` is an array; matches if the column equals any element.                                                                   |
-| `like`   | Case-insensitive substring match. `%` and `_` in `value` are literal characters, not wildcards.                                  |
+| Operator | Meaning                                                                                                                                                                                                                                                                                            |
+| :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eq`     | Equal. `internalPort` is compared as a number and `metadata.*` as text; other columns compare the value as given. On PostgreSQL, a value that is not a UUID for a `uuid` column (`id`, `edgeId`) is a database error (`500` through the REST API); the filesystem provider simply matches nothing. |
+| `neq`    | Value is present and not equal. Rows where the column is `null` or missing never match.                                                                                                                                                                                                            |
+| `in`     | `value` is an array; matches if the column equals any element.                                                                                                                                                                                                                                     |
+| `like`   | Case-insensitive substring match. The filesystem provider treats `value` literally; PostgreSQL wraps it in `ILIKE '%<value>%'` without escaping, so `%` and `_` in `value` act as wildcards there.                                                                                                 |
 
 `metadata.<key>` addresses a top-level key of `metadata` (PostgreSQL: `metadata->>'key'`, compared as text).
 
@@ -87,7 +87,7 @@ Both providers enforce unique `token` per entity and unique primary key `id`. En
 
 - **Default** when `POSTGRES_URL` is not set. Single process, except in [shared mode](#shared-mode-test-only): without `ALLOW_FILESYSTEM_MULTIWORKER` the Hub refuses to start with `WORKERS > 1` and no PostgreSQL.
 - **File**: all collections live in one file, `DATA_DIR/store.json` (`{ "edge": [...], "tunnel": [...] }`), so a change touching several collections (such as an edge cascade) is written in one atomic step (write to a temporary file, then rename).
-- **Transactions**: `transaction()` applies changes to a copy of the in-memory state and swaps it in only if `fn` succeeds.
+- **Transactions**: `transaction()` snapshots the in-memory state (a JSON copy), runs `fn` against the live state, and restores the snapshot if `fn` throws. It is not isolated: while `fn` awaits (for example a gating hook), other requests read its uncommitted changes, and a rollback also discards any change another request made in the meantime.
 - **Performance**: reads are served from memory. Writes are coalesced and flushed at most every 5 seconds.
 - **Durability trade-off**: an abrupt crash (SIGKILL, power loss) can lose up to the last 5 seconds of changes. Graceful shutdown flushes immediately via `close()`. Use PostgreSQL when every change must be durable.
 - **Cascade**: removing an edge removes its tunnels in the same write.

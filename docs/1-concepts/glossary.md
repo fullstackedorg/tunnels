@@ -4,16 +4,16 @@ Every document in this repository uses the terms below with exactly these meanin
 
 ## Nodes and Processes
 
-| Term                              | Definition                                                                                                                                                                                     |
-| :-------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Hub**                           | The public server. Accepts runtime sockets, hosts lifelines, serves the REST API, and performs direct connections. Selected when `HUB_URL` is not set. See [Hub](../2-nodes/hub.md).           |
-| **Edge**                          | An outbound-only daemon running inside a private network. Holds one lifeline to the Hub and dials targets on the Hub's behalf. Selected when `HUB_URL` is set. See [Edge](../2-nodes/edge.md). |
-| **FullStacked runtime** (runtime) | The client environment that runs application code and native drivers. It opens tunnel sessions to the Hub through `tunnel.register`.                                                           |
-| **Primary**                       | In multi-worker mode (`WORKERS > 1`), the parent process that forks workers and brokers IPC between them. It never carries tunnel data itself.                                                 |
-| **Worker**                        | A forked process that serves connections. In single-process mode (`WORKERS = 1`) the only process is treated as worker `1`.                                                                    |
-| **Worker identity**               | `<bootId>:<workerId>`. `bootId` is a random value generated each time the Hub starts, so identities from a previous run never match a live worker.                                             |
-| **Lifeline worker**               | The Hub worker that holds a given Edge's lifeline.                                                                                                                                             |
-| **Receiving worker**              | The Hub worker on which a relay session upgrade happens to arrive. It may or may not be the worker named in its `x-relay-worker` header.                                                       |
+| Term                              | Definition                                                                                                                                                                                                                           |
+| :-------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Hub**                           | The public server. Accepts runtime sockets, hosts lifelines, serves the REST API, and performs direct connections. Selected when `HUB_URL` is not set. See [Hub](../2-nodes/hub.md).                                                 |
+| **Edge**                          | An outbound-only daemon running inside a private network. Holds one lifeline to the Hub and dials targets on the Hub's behalf. Selected when `HUB_URL` is set. See [Edge](../2-nodes/edge.md).                                       |
+| **FullStacked runtime** (runtime) | The client environment that runs application code and native drivers. It opens tunnel sessions to the Hub through `tunnel.register`.                                                                                                 |
+| **Primary**                       | In multi-worker mode (`WORKERS > 1`), the parent process that forks workers and brokers IPC between them. It never carries tunnel data itself.                                                                                       |
+| **Worker**                        | A forked process that serves connections. In single-process mode (`WORKERS = 1`) the only process is treated as worker `1`.                                                                                                          |
+| **Worker identity**               | `<bootId>:<workerId>`. `bootId` is a random value generated each time the Hub starts (unless `HUB_BOOT_ID` is set, see [Presence](../3-subsystems/warden.md#presence)), so identities from a previous run never match a live worker. |
+| **Lifeline worker**               | The Hub worker that holds a given Edge's lifeline.                                                                                                                                                                                   |
+| **Receiving worker**              | The Hub worker on which a relay session upgrade happens to arrive. It may or may not be the worker named in its `x-relay-worker` header.                                                                                             |
 
 ## Entities and Credentials
 

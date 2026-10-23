@@ -3,7 +3,7 @@
 Every service recipe has two steps:
 
 1. **Register the tunnel** on the Hub through the REST API. The Hub generates the token and returns it.
-2. **Connect from the FullStacked runtime** with `tunnel.register({ host, port?, unsecure?, authorization })`, where `host` is the Hub's hostname (no port), `port` its port (default `443`, or `80` with `unsecure`), `unsecure: true` selects plain `ws://` instead of `wss://`, and `authorization` is the tunnel token. It returns a virtual host for native drivers; the runtime carries each driver connection as a stream on a pooled tunnel session (WebSocket) to the Hub, so connection pools work unchanged. The Hub always connects to the tunnel's `internalHost:internalPort`; the port configured in the driver follows the usual convention for that service and does not affect routing.
+2. **Connect from the FullStacked runtime** with `tunnel.register({ host, port?, unsecure?, authorization })`, where `host` is the Hub's hostname (no port), `port` its port (default `443`, or `80` with `unsecure`), `unsecure: true` selects plain `ws://` instead of `wss://`, and `authorization` is the tunnel token (a `path` option also exists; the Hub serves tunnel sessions on `/` only, so leave it unset, see [`tunnel.d.ts`](tunnel.d.ts)). It returns a virtual host for native drivers; the runtime carries each driver connection as a stream on a pooled tunnel session (WebSocket) to the Hub, so connection pools work unchanged. The Hub always connects to the tunnel's `internalHost:internalPort`; the port configured in the driver follows the usual convention for that service and does not affect routing.
 
 > [!NOTE]
 > The `fullstacked/tunnel` module is built directly into the FullStacked runtime. Execute any example script with:

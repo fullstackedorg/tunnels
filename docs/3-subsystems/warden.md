@@ -56,7 +56,7 @@ Presence lets any worker, and `GET /edges`, know whether an Edge is online:
 
 Presence is written once per sweep per lifeline, never per pong, so KV load is three writes per Edge per `HEARTBEAT_INTERVAL` (`SET edge:<id>:worker`, `SET edge:<id>:last_seen`, `SADD worker:<identity>:edges`). `last_seen` is the time of the sweep, so it can be later than the last frame actually received by up to one `HEARTBEAT_TIMEOUT`.
 
-An Edge is **online** when `edge:<id>:worker` exists and its `bootId` equals the current Hub's `bootId`. Because `bootId` changes on every Hub start, mappings left in Redis by a previous run are never mistaken for live lifelines.
+An Edge is **online** when `edge:<id>:worker` exists and its `bootId` equals the current Hub's `bootId`. Because `bootId` changes on every Hub start, mappings left in Redis by a previous run are never mistaken for live lifelines. The one exception is `HUB_BOOT_ID`: the Primary passes its `bootId` to its workers through this environment variable, and any Hub process that finds it set (including a single-process Hub) uses it instead of generating one. Never set it yourself: with a fixed `bootId`, presence left by a previous run reads as online until it expires (`2 * HEARTBEAT_TIMEOUT`).
 
 ### Heartbeat and Disconnect
 
@@ -83,7 +83,7 @@ A worker asks the Edge for a session (`requestRelay`) when a stream finds none, 
 - **Clustered, lifeline elsewhere**: read `edge:<id>:worker` and send `relay_request { edgeId, worker }` through the Primary to the lifeline worker, which writes `open_relay { worker }`. A lifeline worker that no longer holds the lifeline answers `relay_failed { reason: "edge_disconnected" }`.
 - **No lifeline at all** (single process, or no presence): the waiting streams fail with `edge_disconnected`. KV unavailable while reading presence: `stream_error`.
 
-Requests run in parallel: a burst of new streams asks for as many sessions at once. Sessions up plus requests outstanding (each counted for 10 seconds, or until a session comes up or a failure is reported) never exceed `MAX_RELAY_SESSIONS` (64) per Edge per worker. The lifeline connecting always sends one.
+Requests run in parallel: a burst of new streams asks for as many sessions at once. Sessions up plus requests outstanding (each counted for 10 seconds, or until a session comes up or a failure is reported) never exceed `MAX_RELAY_SESSIONS` (64) per Edge per worker, with one exception: a lifeline connecting to a worker that has no live relay session of the Edge sends one request regardless of that count (and sends none when the worker already has one).
 
 ### Accepting a Session
 
