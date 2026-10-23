@@ -41,7 +41,7 @@ When an upgrade presents an edge token without an `x-relay-worker` header:
 4. **Newest wins**: if this Edge already has a lifeline (on this worker, or on another worker according to `edge:<id>:worker`), the older one is closed with `1000 superseded`. The older lifeline's cleanup never unregisters the newer lifeline or its presence. In clustered mode the new lifeline worker sends `close_lifeline { edgeId, reason: "superseded" }` to the old worker through the Primary.
 5. **Version**: if the `version` header differs from `edge.version`, the stored value is updated (asynchronously). The field is informational and read-only through the REST API.
 6. **Register**: `edgeLifelines.set(edge.id, ws)`, write presence immediately (below), and `SADD worker:<bootId>:<workerId>:edges <edgeId>`.
-7. **Warm relay session**: if the Edge has no relay session on this worker, write `open_relay` for this worker, so the first stream does not wait for the Edge's dial. The lifeline worker keeps that session open while it holds the lifeline (see [Idle Sessions](#idle-sessions)).
+7. **Warm relay session**: write `open_relay` for this worker, so the first stream does not wait for the Edge's dial. The lifeline worker keeps that session open while it holds the lifeline (see [Idle Sessions](#idle-sessions)). An Edge dials a new lifeline when the old one dropped, and its relay sessions usually traveled the same path: the Edge's sessions on this worker are pinged at once and not picked until they answer (see [Dead Sessions](#dead-sessions)).
 
 The lifeline worker writes every `open_relay` for the Edge, its own and those other workers ask for (see [Requesting a Session](#requesting-a-session)). When the Edge answers `open_relay_failed { worker }`, the lifeline worker fails its own waiting streams with `relay_dial_failed` when `worker` is itself, and otherwise sends `relay_failed` to `worker`.
 
@@ -83,7 +83,7 @@ A worker asks the Edge for a session (`requestRelay`) when a stream finds none, 
 - **Clustered, lifeline elsewhere**: read `edge:<id>:worker` and send `relay_request { edgeId, worker }` through the Primary to the lifeline worker, which writes `open_relay { worker }`. A lifeline worker that no longer holds the lifeline answers `relay_failed { reason: "edge_disconnected" }`.
 - **No lifeline at all** (single process, or no presence): the waiting streams fail with `edge_disconnected`. KV unavailable while reading presence: `stream_error`.
 
-Requests run in parallel: a burst of new streams asks for as many sessions at once. Sessions up plus requests outstanding (each counted for 10 seconds, or until a session comes up or a failure is reported) never exceed `MAX_RELAY_SESSIONS` (64) per Edge per worker, with one exception: a lifeline connecting to a worker that has no live relay session of the Edge sends one request regardless of that count (and sends none when the worker already has one).
+Requests run in parallel: a burst of new streams asks for as many sessions at once. Sessions up plus requests outstanding (each counted for 10 seconds, or until a session comes up or a failure is reported) never exceed `MAX_RELAY_SESSIONS` (64) per Edge per worker, with one exception: a lifeline connecting sends one request regardless of that count. Sessions that are not answering (see [Dead Sessions](#dead-sessions)) do not count as up.
 
 ### Accepting a Session
 
@@ -97,19 +97,31 @@ A relay session is an upgrade presenting an edge token and `x-relay-worker: <wor
 
 `placeStream(edgeId, deadline)` chooses the session for a new stream and reserves it until the stream's `OPEN` is written (so a burst of streams does not all pick the same idle session):
 
-1. **Lightest**: among the open sessions that are neither clogged nor at `MAX_STREAMS_PER_RELAY` (256) streams, the one with the fewest streams (reservations included; ties: the fewest bytes waiting to go out). When all are clogged or full, the lightest of all. No session yet: ask for one and wait for it, until the deadline.
+1. **Lightest**: among the open, answering sessions that are neither clogged nor at `MAX_STREAMS_PER_RELAY` (256) streams, the one with the fewest streams (reservations included; ties: the fewest bytes waiting to go out). When all are clogged or full, the lightest of all. No session yet: ask for one and wait for it, until the deadline.
 2. **Idle**: the stream takes it. If it was the last idle session, ask the Edge for a spare ahead of the next stream.
 3. **Every session busy**: while `MAX_RELAY_SESSIONS` (64) allows, ask the Edge for one more and wait for it up to `SPARE_WAIT_MS` (1 s, within the deadline): the stream takes the next session to come up. When none comes in time, or the cap is reached, it shares the lightest session.
 
 A session is **clogged** while any of these holds:
 
-| Criterion   | Threshold                                                                                                                                 |
-| :---------- | :---------------------------------------------------------------------------------------------------------------------------------------- |
-| Streams     | 32 streams on the session.                                                                                                                |
-| Queued data | More than 512 KiB waiting to go out on the WebSocket for over 50 ms.                                                                      |
-| Round trip  | Smoothed round trip over `2 x` the session's best + 20 ms (measured with a tagged `ping` every second while the session carries streams). |
+| Criterion   | Threshold                                                                                                                                           |
+| :---------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Streams     | 32 streams on the session.                                                                                                                          |
+| Queued data | More than 512 KiB waiting to go out on the WebSocket for over 50 ms.                                                                                |
+| Round trip  | Smoothed round trip over `2 x` the session's best + 20 ms (measured with the tagged `ping` sent every second, see [Dead Sessions](#dead-sessions)). |
 
 These limits are constants, not settings.
+
+### Dead Sessions
+
+A path can drop a relay session without a close: Cloudflare cuts all of an Edge's WebSockets at once (the Edge sees `1006`, the Hub's side stays open). The [heartbeat](../1-concepts/protocol-spec.md#3-heartbeat-all-websocket-connections) would notice after `HEARTBEAT_TIMEOUT` (30 s), and every new stream placed on the dead session meanwhile would fail, so each worker pings every relay session once a second, idle ones included, and tracks how long its oldest ping has gone unanswered with nothing received (any frame from the Edge counts, since its pong can wait behind the data it sends):
+
+| Unanswered for                                           | Effect                                                                                     |
+| :------------------------------------------------------- | :----------------------------------------------------------------------------------------- |
+| `RELAY_SUSPECT_MS` (1 s)                                 | Not picked for new streams and not counted as up, so a fresh session is asked for instead. |
+| `RELAY_STALE_MS` (3 s), nothing queued ahead of the ping | Closed with `heartbeat_timeout` and terminated at once (no close handshake to wait for).   |
+| `RELAY_STALE_BUSY_MS` (10 s), even with data queued      | The same: data waiting to go out delays the ping, so only a long silence counts then.      |
+
+When the Edge's lifeline connects, its sessions on that worker count as unanswered from 1 s ago until they answer a ping sent right away, and a fresh session is requested. A healthy session answers within a round trip and is picked again; one the path dropped is ended within 3 s. Sessions of the Edge on other workers are not told and are found by their own pings.
 
 ### Idle Sessions
 

@@ -9,7 +9,7 @@ import { runGatingHook, dispatchTelemetry } from "../utils/hooks.ts";
 import { closeWithReason, getLocalCloseReason, registerHeartbeat } from "../ws/heartbeat.ts";
 import { createWebSocketServer } from "../ws/index.ts";
 import { severedSince } from "../tunnels/registry.ts";
-import { liveRelays, relayRequestFailed, requestRelay } from "./relays.ts";
+import { relayRequestFailed, suspectRelays } from "./relays.ts";
 import type { OpenRelayOrder } from "./types.ts";
 import { DEFAULT_HEARTBEAT_TIMEOUT } from "../constants.ts";
 
@@ -156,8 +156,9 @@ async function acceptLifeline(req: IncomingMessageWithDeny, ws: WebSocket, edge:
     });
 
     // 4. A relay session kept warm here, so the first stream skips the Edge's dial (asked on
-    // this lifeline even when an earlier one was asked already)
-    if (!liveRelays(edge.id).length) requestRelay(edge.id, true);
+    // this lifeline even when an earlier one was asked already). An Edge redials its lifeline when
+    // its path dropped it, likely with its relay sessions: those wait for a pong to be picked again.
+    suspectRelays(edge.id);
 
     // 5. The Edge reports relay sessions it could not dial
     ws.on("message", (data: Buffer | string) => {

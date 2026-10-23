@@ -15,6 +15,13 @@ import { closeWithReason, getLocalCloseReason, registerHeartbeat } from "../ws/h
  * streams, more than CLOG_QUEUED_BYTES waiting to go out for over CLOG_QUEUED_MS, or a round trip
  * over CLOG_RTT_FACTOR x its best + CLOG_RTT_SLACK_MS. Idle sessions close after RELAY_IDLE_MS,
  * except the one an Edge keeps with its lifeline worker.
+ *
+ * Every session is pinged each second, idle ones included: a path can drop a WebSocket without a
+ * close (Cloudflare cuts an Edge's connections as a group, latency bench S20), and the 30 s
+ * heartbeat would leave new streams on the dead session until then. A session whose ping is
+ * unanswered for RELAY_SUSPECT_MS, with nothing received since, is no longer picked or counted as
+ * live (a spare is asked for instead); after RELAY_STALE_MS with nothing queued ahead of the ping,
+ * or RELAY_STALE_BUSY_MS in any case, it is terminated.
  */
 export const MAX_RELAY_SESSIONS = 64;
 export const SPARE_WAIT_MS = 1000;
@@ -25,6 +32,9 @@ const CLOG_RTT_FACTOR = 2;
 const CLOG_RTT_SLACK_MS = 20;
 export const RELAY_IDLE_MS = 30_000;
 const RELAY_REQUEST_TIMEOUT_MS = 10_000;
+export const RELAY_SUSPECT_MS = 1000;
+export const RELAY_STALE_MS = 3000;
+export const RELAY_STALE_BUSY_MS = 10_000;
 
 export interface Relay {
     edgeId: string;
@@ -36,6 +46,8 @@ export interface Relay {
     rttSmooth: number;
     /** Streams placed on it and not opened yet. */
     reserved: number;
+    /** When its oldest unanswered ping went out (0: none, or something was received since). */
+    probeSince: number;
 }
 
 interface Waiter {
@@ -60,7 +72,7 @@ export function configureRelays(options: {
     requester = options.request;
     keepsWarm = options.keepWarm;
     if (timers.length) return;
-    timers = [setInterval(measureRoundTrips, 1000), setInterval(reapIdle, 5000)];
+    timers = [setInterval(probeRelays, 1000), setInterval(reapIdle, 5000)];
     timers.forEach((t) => t.unref());
 }
 
@@ -86,8 +98,24 @@ export function requestRelay(edgeId: string, force = false): boolean {
     return true;
 }
 
+/** The Edge's sessions that are open and answering (see RELAY_SUSPECT_MS). */
 export function liveRelays(edgeId: string): Relay[] {
-    return (relays.get(edgeId) ?? []).filter((r) => r.session.open);
+    return (relays.get(edgeId) ?? []).filter((r) => r.session.open && !suspect(r));
+}
+
+const suspect = (r: Relay) => r.probeSince > 0 && Date.now() - r.probeSince >= RELAY_SUSPECT_MS;
+
+/**
+ * The Edge dialed a new lifeline, so the path its sessions shared may have dropped them: they are
+ * not picked until they answer a ping, and a fresh session is asked for at once.
+ */
+export function suspectRelays(edgeId: string): void {
+    for (const r of relays.get(edgeId) ?? []) {
+        if (!r.session.open) continue;
+        ping(r);
+        r.probeSince = Math.min(r.probeSince || Infinity, Date.now() - RELAY_SUSPECT_MS);
+    }
+    requestRelay(edgeId, true);
 }
 
 function clogged(r: Relay): boolean {
@@ -222,11 +250,14 @@ export function registerRelay(edgeId: string, ws: WebSocket): Relay {
         rttMin: 0,
         rttSmooth: 0,
         reserved: 0,
+        probeSince: 0,
     };
     registerHeartbeat(ws);
     relays.set(edgeId, [...(relays.get(edgeId) ?? []), relay]);
     pendingRequests(edgeId).shift();
     ws.on("pong", (data: Buffer) => onPong(relay, data));
+    // anything the Edge sends proves the session alive, also when its pong waits behind that data
+    ws.on("message", () => (relay.probeSince = 0));
     ws.once("close", () => {
         const left = (relays.get(edgeId) ?? []).filter((r) => r !== relay);
         if (left.length) relays.set(edgeId, left);
@@ -268,21 +299,40 @@ export function closeRelays(edgeId: string | null, reason: Reason): number {
 
 const PING_TAG = 0x52;
 
-function measureRoundTrips(): void {
+function ping(r: Relay): void {
+    const payload = Buffer.alloc(9);
+    payload[0] = PING_TAG;
+    payload.writeDoubleBE(performance.now(), 1);
+    try {
+        r.ws.ping(payload);
+    } catch {}
+}
+
+/** Each second: sessions silent past RELAY_STALE_MS are terminated, the others pinged. */
+export function probeRelays(): void {
+    const now = Date.now();
     for (const list of relays.values()) {
         for (const r of list) {
-            if (!r.session.open || r.session.size === 0) continue;
-            const payload = Buffer.alloc(9);
-            payload[0] = PING_TAG;
-            payload.writeDoubleBE(performance.now(), 1);
-            try {
-                r.ws.ping(payload);
-            } catch {}
+            if (!r.session.open) continue;
+            const silent = r.probeSince ? now - r.probeSince : 0;
+            // data queued ahead of the ping delays its pong: only a long silence counts then
+            if (
+                silent >= RELAY_STALE_BUSY_MS ||
+                (silent >= RELAY_STALE_MS && !r.ws.bufferedAmount)
+            ) {
+                closeWithReason(r.ws, "heartbeat_timeout");
+                // the peer is gone: no close handshake to wait for
+                r.ws.terminate();
+                continue;
+            }
+            ping(r);
+            if (!r.probeSince) r.probeSince = now;
         }
     }
 }
 
 function onPong(r: Relay, data: Buffer): void {
+    r.probeSince = 0;
     if (data?.length !== 9 || data[0] !== PING_TAG) return;
     const rtt = performance.now() - data.readDoubleBE(1);
     if (!r.rttMin || rtt < r.rttMin) r.rttMin = rtt;

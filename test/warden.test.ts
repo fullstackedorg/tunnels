@@ -9,8 +9,13 @@ import {
     configureRelays,
     pickRelay,
     placeStream,
+    probeRelays,
     registerRelay,
+    RELAY_STALE_BUSY_MS,
+    RELAY_STALE_MS,
+    RELAY_SUSPECT_MS,
     relayRequestFailed,
+    suspectRelays,
     waitForRelay,
 } from "../src/warden/relays.ts";
 import { openRelayedStream } from "../src/warden/index.ts";
@@ -23,18 +28,24 @@ import {
     jsonFetch,
 } from "./helpers.ts";
 
-// Enough of a ws WebSocket for a relay session that only opens streams.
+// Enough of a ws WebSocket for a relay session that only opens streams; it answers pings like a
+// live Edge until `silent` (a path that dropped it without a close).
 function fakeRelayWs() {
     const ws: any = new EventEmitter();
     Object.assign(ws, {
         OPEN: 1,
         readyState: 1,
         bufferedAmount: 0,
+        silent: false,
+        pings: 0,
         sent: [] as Buffer[],
         send(frame: Buffer) {
             ws.sent.push(frame);
         },
-        ping() {},
+        ping(data?: Buffer) {
+            ws.pings++;
+            if (!ws.silent) queueMicrotask(() => ws.emit("pong", data ?? Buffer.alloc(0)));
+        },
         close() {
             ws.readyState = 3;
             ws.emit("close", 1000, Buffer.from("client_close"));
@@ -167,6 +178,75 @@ test("warden: a relay session dropping before OPENED fails the stream with edge_
     ws.readyState = 3;
     ws.emit("close", 1006, Buffer.alloc(0));
     await assert.rejects(opening, (e: any) => e.reason === "edge_disconnected");
+    closeRelays(edge, "edge_deleted");
+});
+
+test("warden: a relay session cut without a close is skipped after a second and dropped after three", async () => {
+    const requests: string[] = [];
+    configureRelays({ request: (id) => requests.push(id), keepWarm: () => false });
+    const edge = "edge-silent-1";
+    const ws = fakeRelayWs();
+    const relay = registerRelay(edge, ws);
+    const ago = (ms: number) => Date.now() - ms;
+
+    // idle sessions are pinged too, and an answer clears the probe
+    probeRelays();
+    assert.equal(ws.pings, 1);
+    assert.ok(relay.probeSince > 0);
+    await new Promise((r) => queueMicrotask(() => r(null)));
+    assert.equal(relay.probeSince, 0);
+
+    // the path drops it silently: picked while the ping is young, skipped past RELAY_SUSPECT_MS
+    ws.silent = true;
+    probeRelays();
+    assert.equal(pickRelay(edge), relay);
+    relay.probeSince = ago(RELAY_SUSPECT_MS);
+    assert.equal(pickRelay(edge), undefined);
+
+    // data from the Edge proves it alive, also while its pong waits behind that data
+    const reset = Buffer.from([6, 0, 0, 0x30, 0x39]);
+    ws.emit("message", reset, true);
+    assert.equal(relay.probeSince, 0);
+    assert.equal(pickRelay(edge), relay);
+
+    // data queued ahead of the ping: only a long silence counts
+    relay.probeSince = ago(RELAY_STALE_MS);
+    ws.bufferedAmount = 64 * 1024;
+    probeRelays();
+    assert.equal(ws.readyState, 1);
+    relay.probeSince = ago(RELAY_STALE_BUSY_MS);
+    probeRelays();
+    assert.equal(ws.readyState, 3, "silent past RELAY_STALE_BUSY_MS while busy");
+
+    // nothing queued: dropped at RELAY_STALE_MS, without waiting for a close handshake
+    const ws2 = fakeRelayWs();
+    const relay2 = registerRelay(edge, ws2);
+    ws2.silent = true;
+    relay2.probeSince = ago(RELAY_STALE_MS);
+    probeRelays();
+    assert.equal(ws2.readyState, 3);
+    assert.equal(pickRelay(edge), undefined);
+    closeRelays(edge, "edge_deleted");
+});
+
+test("warden: a new lifeline makes the Edge's relay sessions wait for a pong, and asks for a fresh one", async () => {
+    const requests: string[] = [];
+    configureRelays({ request: (id) => requests.push(id), keepWarm: () => false });
+    const edge = "edge-suspect-1";
+    const ws = fakeRelayWs();
+    const relay = registerRelay(edge, ws);
+    assert.equal(pickRelay(edge), relay);
+
+    suspectRelays(edge);
+    assert.equal(ws.pings, 1, "pinged at once");
+    assert.equal(pickRelay(edge), undefined, "not picked before it answers");
+    assert.deepEqual(requests, [edge], "a fresh session asked for");
+    await new Promise((r) => queueMicrotask(() => r(null)));
+    assert.equal(pickRelay(edge), relay, "picked again once it answers");
+
+    // an Edge with no session here yet: one is asked for, as before
+    suspectRelays("edge-suspect-2");
+    assert.deepEqual(requests, [edge, "edge-suspect-2"]);
     closeRelays(edge, "edge_deleted");
 });
 
