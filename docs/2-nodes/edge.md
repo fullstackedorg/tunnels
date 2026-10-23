@@ -14,15 +14,17 @@ flowchart TD
     Drain --> IdlePoll["Idle-poll every\nREVOKED_POLL_INTERVAL"]
     IdlePoll -.->|"Accepted"| HB
 
-    Orders -->|"connect_tunnel"| Dispatch{"WORKERS > 1?"}
-    Dispatch -->|"Yes"| RouteWorker["Primary routes order\nto least-busy worker (IPC)"]
-    Dispatch -->|"No"| Gate
-    RouteWorker --> Gate["edge_tunnel_request hook"]
-    Gate -->|"deny / throw"| Fail0["connect_tunnel_failed\n(hook_denied / hook_error)"]
-    Gate -->|"pass"| Dials["Dial target and Hub in parallel\n(until receivedAt + connectTimeoutMs)"]
-    Dials -->|"Target fails / deadline"| Fail1["Before handoff: connect_tunnel_failed\nAfter handoff: close relayed socket 1014\n(target_unreachable / connect_timeout)"]
-    Dials -->|"Relayed dial fails"| Fail2["Destroy target socket;\nconnect_tunnel_failed (relay_dial_failed)"]
-    Dials -->|"Both open"| Splice["Attach pipelines, await edge_tunnel_connected,\nresume streams"]
+    Orders -->|"open_relay { worker }"| Dispatch{"WORKERS > 1?"}
+    Dispatch -->|"Yes"| RouteWorker["Primary hands it to the worker\nwith the fewest relay sessions (IPC)"]
+    Dispatch -->|"No"| Dial
+    RouteWorker --> Dial["Dial relay session\n(edge token + x-relay-worker)"]
+    Dial -->|"Fails twice (200 ms apart)"| Failed["open_relay_failed { worker }"]
+    Dial -->|"Open"| Session["Relay session: the Hub opens streams"]
+    Session --> Gate["OPEN: edge_tunnel_request hook"]
+    Gate -->|"deny / throw"| Reset0["RESET hook_denied / hook_error"]
+    Gate -->|"pass"| TDial["edge_tunnel_start;\ndial target (connectTimeoutMs)"]
+    TDial -->|"Fails / timer / Hub RESET"| Reset1["RESET target_unreachable / connect_timeout\n(or the Hub's reason); edge_tunnel_end"]
+    TDial -->|"Connected"| Splice["OPENED; splice 1:1,\ndata after edge_tunnel_connected"]
     Splice --> End["Symmetrical teardown;\nedge_tunnel_end(reason)"]
 ```
 
@@ -46,7 +48,7 @@ Run exactly one daemon per edge token. A second daemon with the same token repla
 
 ### Heartbeat
 
-The Edge runs the [bidirectional heartbeat](../1-concepts/protocol-spec.md#3-heartbeat-all-websocket-connections) on its lifeline and on every relayed socket. A lifeline that receives nothing for `HEARTBEAT_TIMEOUT` is terminated (`heartbeat_timeout`) and the Edge reconnects.
+The Edge runs the [bidirectional heartbeat](../1-concepts/protocol-spec.md#3-heartbeat-all-websocket-connections) on its lifeline and on every relay session. A lifeline that receives nothing for `HEARTBEAT_TIMEOUT` is terminated (`heartbeat_timeout`) and the Edge reconnects.
 
 ### Reconnection
 
@@ -68,74 +70,52 @@ In the revoked state the Edge:
 
 1. Logs `Edge token revoked` at `warn` (repeated on every poll).
 2. Stops accepting orders.
-3. Lets in-flight sessions finish for up to `DRAIN_TIMEOUT` (default 30s), then force-closes the rest. When revocation comes from a token roll or deletion, the Hub also closes those sessions itself (`token_rolled` / `edge_deleted`), so draining is only a safety net.
+3. Lets in-flight streams finish for up to `DRAIN_TIMEOUT` (default 30s), then resets the rest and closes its relay sessions. When revocation comes from a token roll or deletion, the Hub also closes those sessions itself (`token_rolled` / `edge_deleted`), so draining is only a safety net.
 4. Stays alive and retries the lifeline every `REVOKED_POLL_INTERVAL` (default 300s).
     - **With `TOKEN_FILE`**: the Edge re-reads the token from the file on disk before each poll attempt. In Kubernetes/Docker secrets environments, updating the secret file allows the daemon to automatically recover without restarting the pod or container!
     - **With static `TOKEN`**: the poll acts as a quiescent keep-alive so container supervisors (e.g. `restart: always`) do not enter aggressive restart crash loops. Restart the daemon with the new token to resume.
 
-A `401` on a relayed socket (expired or already-claimed ticket) only aborts that session (`relay_dial_failed`); it never affects the lifeline.
+A rejected relay session dial (`401` included) is retried once and then reported with `open_relay_failed`, which fails only the streams waiting for that session (`relay_dial_failed`); it never affects the lifeline.
 
 ### Orders
 
-The order formats (`connect_tunnel`, `cancel_tunnel`, `connect_tunnel_failed`) are defined in the [Protocol Spec](../1-concepts/protocol-spec.md#2-lifeline-protocol). The Edge has no timeout setting of its own; every order carries `connectTimeoutMs`.
+The order formats (`open_relay`, `open_relay_failed`) are defined in the [Protocol Spec](../1-concepts/protocol-spec.md#2-lifeline-protocol). The lifeline never carries tunnel data. The Edge has no timeout setting of its own; every stream's `OPEN` carries `connectTimeoutMs`.
 
 ---
 
-## Session Setup and Splicing
+## Relay Sessions
 
-For each `connect_tunnel` order:
+For each `open_relay { worker }` order (ignored in the revoked state), the Edge dials a relay session to `HUB_URL`, presenting its edge token (re-read from `TOKEN_FILE` on every dial) and `x-relay-worker: <worker>`. A failed dial is retried once after 200 ms; when both fail, the Edge sends `open_relay_failed { worker }` on its lifeline.
 
-1. **Gate**: run `edge_tunnel_request(context, tunnel)`. `context.deny()` fails the order with `hook_denied`; a throw or `HOOK_TIMEOUT` fails it with `hook_error`. Either way, `connect_tunnel_failed` is sent, no socket is opened, and neither `edge_tunnel_start` nor `edge_tunnel_end` fires.
-2. **Start & Parallel dials**: dispatch `edge_tunnel_start(context, tunnel)`. Compute `edgeDeadline = receivedAt + connectTimeoutMs` and start both dials: the target socket to `internalHost:internalPort`, and the relayed socket to `HUB_URL` presenting `Authorization: <ticket>`. Each stream is paused as soon as it opens, so the target's greeting and any early runtime bytes are buffered until splicing.
-3. **Target failure or deadline**: destroy the other dial. Before handoff, send `connect_tunnel_failed` with `target_unreachable` or `connect_timeout`. After handoff (the relayed socket was already accepted), close the relayed socket with `1014` and the same reason. `edge_tunnel_timeout` fires when the deadline was the cause.
-4. **Relayed dial failure**: destroy the target socket and send `connect_tunnel_failed` with `relay_dial_failed`.
-5. **Splice**: once both are open, attach two pipelines with backpressure, await `edge_tunnel_connected(context, tunnel, remoteSocket, targetSocket)` (bounded by `HOOK_TIMEOUT`), then resume both streams. Because the hook runs before `resume()`, byte-counting listeners see every byte.
-6. **Teardown**: when either side ends or errors, close both (no half-close) and emit `edge_tunnel_end(context, tunnel, reason, error?)` exactly once.
+The Hub decides how many relay sessions the Edge holds and when they close (see [Warden](../3-subsystems/warden.md#2-relay-sessions)); the Edge only dials what it is asked for. Each session runs the heartbeat and accepts up to `MAX_STREAMS_PER_RELAY` (256) streams at once; an `OPEN` beyond that is answered `RESET stream_limit`.
+
+---
+
+## Stream Setup and Splicing
+
+For each stream the Hub opens on a relay session (`OPEN` with a [`RelayStreamOpen`](../1-concepts/protocol-spec.md#c-relay-sessions) payload; an invalid payload is answered `RESET stream_error`):
+
+1. **Gate**: run `edge_tunnel_request(context, tunnel)`. `context.deny()` answers `RESET hook_denied`; a throw or `HOOK_TIMEOUT` answers `RESET hook_error`. No socket is opened, and neither `edge_tunnel_start` nor `edge_tunnel_end` fires. A stream the Hub reset (or whose relay session closed) while the gate was running is dropped right after it the same way: no dial, no `edge_tunnel_start`, no `edge_tunnel_end`.
+2. **Start and dial**: dispatch `edge_tunnel_start(context, tunnel)` and dial the target at `internalHost:internalPort` (`noDelay`), with a timer of `connectTimeoutMs`. The target socket is paused as soon as it connects, so its greeting waits for the splice, and uses TCP keepalive.
+3. **Dial failure**: a dial error answers `RESET target_unreachable` (`ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, DNS failure) or `RESET connect_timeout` (any other error). When the timer fires first, `edge_tunnel_timeout` fires and the answer is `RESET connect_timeout`. A `RESET` from the Hub during the dial (the runtime stream ended, or the Hub's deadline passed) drops the dial with the Hub's reason. Each case fires `edge_tunnel_end` with its reason.
+4. **Splice**: answer `OPENED` and splice the stream 1:1 to the target socket. Data flows once `edge_tunnel_connected(context, tunnel, remoteSocket, targetSocket)` settles (bounded by `HOOK_TIMEOUT`), so byte-counting listeners see every byte.
+5. **Teardown**: when either side ends or errors, both close (no half-close) and `edge_tunnel_end(context, tunnel, reason, error?)` fires exactly once.
 
 ```typescript
-import { pipeline } from "node:stream";
+import { spliceStreams } from "../mux/splice.ts";
 
-let closed = false;
-function teardown(reason: Reason, error?: Error) {
-    if (closed) return;
-    closed = true;
-    const code = CLOSE_CODES[reason]; // mapping from the Protocol Spec close-code table
-
-    if (relayedWs.readyState === relayedWs.OPEN) {
-        relayedWs.close(code, reason);
-        // Event-driven flush: wait for close event or destination finish with a 500ms safety timer
-        const cleanup = () => {
-            relayedDuplex.destroy(error);
-            targetSocket.destroy(error);
-        };
-        const timer = setTimeout(cleanup, 500);
-        relayedWs.once("close", () => {
-            clearTimeout(timer);
-            cleanup();
-        });
-    } else {
-        // Hard error or already closed: clean up immediately
-        relayedDuplex.destroy(error);
-        targetSocket.destroy(error);
-    }
-
-    dispatchTelemetry("edge_tunnel_end", context, tunnel, reason, error); // not awaited, includes Error if present
-}
-
-// Callback-form pipeline: (source, destination, callback). Each pipeline ends its destination on EOF,
-// and teardown() then closes the other direction (no half-close).
-pipeline(relayedDuplex, targetSocket, (err) =>
-    teardown(err ? "stream_error" : "client_close", err ?? undefined)
-);
-pipeline(targetSocket, relayedDuplex, (err) =>
-    teardown(err ? "stream_error" : "target_close", err ?? undefined)
-);
-
-await runAwaitedHook("edge_tunnel_connected", context, tunnel, relayedDuplex, targetSocket); // bounded by HOOK_TIMEOUT, fail-open
-
-relayedDuplex.resume();
-targetSocket.resume();
+stream.opened(); // OPENED: the Hub splices the runtime stream to this one
+const teardown = spliceStreams({
+    stream, // the Hub's stream on the relay session
+    other: targetSocket,
+    streamEnd: "client_close", // the Hub's FIN, or a RESET reason outside the taxonomy
+    otherEnd: "target_close", // the target's FIN
+    ready: runAwaitedHook("edge_tunnel_connected", context, tunnel, stream, targetSocket), // bounded, fail-open
+    onEnd: (reason, error) => dispatchTelemetry("edge_tunnel_end", context, tunnel, reason, error), // not awaited
+});
 ```
+
+The splice is the same one the Hub uses between a runtime stream and its target: a `FIN` carries the last bytes over and then both sides close; a `RESET` or a socket error ends both with its reason (a `RESET` from the Hub with a taxonomy reason is reported verbatim, a socket error as `stream_error`), and the teardown resets the Hub's stream with that reason so it reaches the runtime.
 
 ---
 
@@ -143,21 +123,20 @@ targetSocket.resume();
 
 With `WORKERS > 1` the Edge runs a Primary and workers on one host:
 
-- **Primary**: holds the single lifeline and the heartbeat. It tracks pending orders in `edgeOrders: Map<ticket, { workerId }>` and active sessions in `activeSessions: Map<ticket, workerId>`, routing each order to the least-busy worker.
-- **Workers**: run `edge_tunnel_request`, perform the parallel dials, splice, and emit the `edge_tunnel_*` hooks.
+- **Primary**: holds the single lifeline and the heartbeat. It counts the relay sessions each worker holds and hands each `open_relay` order to the worker with the fewest; with no worker available it answers `open_relay_failed` itself.
+- **Workers**: dial relay sessions, and for every stream on them run `edge_tunnel_request`, dial the target, splice, and emit the `edge_tunnel_*` hooks.
 
-IPC messages (all use the `type` discriminator, all keyed by `ticket`):
+IPC messages (all use the `type` discriminator):
 
-| `type`                  | Direction        | Payload                                       | Purpose                                                                                           |
-| :---------------------- | :--------------- | :-------------------------------------------- | :------------------------------------------------------------------------------------------------ |
-| `connect_tunnel`        | Primary → worker | `{ reqId, ticket, tunnel, client, deadline }` | `deadline = receivedAt + connectTimeoutMs` as absolute epoch ms (same host clock).                |
-| `drain_sessions`        | Primary → worker | `{ timeoutMs, reason }`                       | Revoked state: let sessions finish for up to `timeoutMs` (`DRAIN_TIMEOUT`), then force-close.     |
-| `cancel_tunnel`         | Primary → worker | `{ ticket, reason }`                          | Abort in-flight dials.                                                                            |
-| `order_handoff`         | worker → Primary | `{ ticket }`                                  | Relayed socket accepted; Primary moves order from `edgeOrders` to `activeSessions`.               |
-| `connect_tunnel_failed` | worker → Primary | `{ reqId, ticket, reason }`                   | Primary forwards the frame on the lifeline and removes the pending order.                         |
-| `session_ended`         | worker → Primary | `{ ticket }`                                  | Primary looks up `activeSessions`, decrements the worker's active count, and deletes the session. |
+| `type`              | Direction        | Payload                 | Purpose                                                                                                                  |
+| :------------------ | :--------------- | :---------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| `open_relay`        | Primary → worker | `{ worker }`            | Dial a relay session to the Hub worker `worker`.                                                                         |
+| `relay_opened`      | worker → Primary | none                    | A relay session is up; the worker's count goes up.                                                                       |
+| `relay_closed`      | worker → Primary | none                    | A relay session closed; the worker's count goes down.                                                                    |
+| `open_relay_failed` | worker → Primary | `{ worker }`            | Both dials failed; the Primary forwards the frame on the lifeline.                                                       |
+| `drain_sessions`    | Primary → worker | `{ timeoutMs, reason }` | Revoked state: let streams finish for up to `timeoutMs` (`DRAIN_TIMEOUT`), then reset the rest and close relay sessions. |
 
-**Worker crash**: the Primary forks a replacement and, for each pending order owned by the dead worker (not yet `order_handoff`), sends `connect_tunnel_failed` with `relay_dial_failed`. Established sessions on that worker end when their sockets close; the Hub sees the relayed sockets drop and closes the runtime sockets with `stream_error`.
+**Worker crash**: the Primary forks a replacement. The relay sessions of the dead worker drop with it, which ends their streams on the Hub; the Hub asks for new sessions as streams need them.
 
 **Primary crash**: the whole daemon exits; restart it with a process supervisor.
 
@@ -165,9 +144,9 @@ IPC messages (all use the `type` discriminator, all keyed by `ticket`):
 
 ## Shutdown
 
-On `SIGINT` / `SIGTERM` the Edge closes its lifeline with `1001 edge_shutdown`, stops accepting orders, lets sessions finish for up to `SHUTDOWN_TIMEOUT`, closes any remaining relayed sockets with `1001 edge_shutdown`, and exits.
+On `SIGINT` / `SIGTERM` the Edge closes its lifeline with `1001 edge_shutdown`, stops accepting orders, lets streams finish for up to `SHUTDOWN_TIMEOUT`, resets the remaining ones with `edge_shutdown`, closes its relay sessions with `1001 edge_shutdown`, and exits.
 
-In multi-worker mode the Primary closes the lifeline and forwards the signal to every worker; each worker drains its own sessions the same way and exits. The Primary exits once all workers have exited, or `SHUTDOWN_TIMEOUT + 5s` after the signal at the latest.
+In multi-worker mode the Primary closes the lifeline and forwards the signal to every worker; each worker drains its own streams and relay sessions the same way and exits. The Primary exits once all workers have exited, or `SHUTDOWN_TIMEOUT + 5s` after the signal at the latest.
 
 ---
 

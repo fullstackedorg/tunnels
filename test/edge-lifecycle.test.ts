@@ -6,6 +6,7 @@ import http from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { startHub } from "../src/hub/index.ts";
 import { EdgeLifeline } from "../src/edge/lifeline.ts";
+import { readEdgeToken } from "../src/edge/relay.ts";
 import { parseConfig } from "../src/utils/config.ts";
 import { registerHook, clearHooks } from "../src/utils/hooks.ts";
 import {
@@ -77,13 +78,11 @@ test("edge-lifecycle: tokenFile reads token from disk dynamically", async () => 
         tokenFilePath,
     ]);
 
-    const lifeline = new EdgeLifeline({ config: dummyConfig });
-    const readToken1 = (lifeline as any).getToken();
-    assert.equal(readToken1, "edg_initialtoken123");
+    // the lifeline and every relay session dial read it again
+    assert.equal(readEdgeToken(dummyConfig), "edg_initialtoken123");
 
     fs.writeFileSync(tokenFilePath, "edg_updatedtoken456\n", "utf-8");
-    const readToken2 = (lifeline as any).getToken();
-    assert.equal(readToken2, "edg_updatedtoken456");
+    assert.equal(readEdgeToken(dummyConfig), "edg_updatedtoken456");
 
     cleanupTempDir(tempDir);
 });

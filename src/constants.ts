@@ -98,9 +98,12 @@ export const DEFAULT_DRAIN_TIMEOUT = 30;
 export const DEFAULT_REVOKED_POLL_INTERVAL = 300;
 export const DEFAULT_ENTITY_CACHE_TTL = 60;
 export const DEFAULT_NEGATIVE_CACHE_TTL = 5;
-export const DEFAULT_MAX_PENDING_ORDERS = 1000;
-export const DEFAULT_MAX_LIFELINE_BUFFER = 1048576;
 export const DEFAULT_DATA_DIR = "data";
 export const DEFAULT_WORKERS = 1;
 export const DEFAULT_RECONNECT_INTERVAL = 1;
 export const DEFAULT_MAX_RECONNECT_INTERVAL = 30;
+
+/** Header of an Edge's relay session upgrade: the Hub worker identity it is dialed for. */
+export const RELAY_WORKER_HEADER = "x-relay-worker";
+/** Most streams the Edge serves at once on one relay session (RESET stream_limit beyond). */
+export const MAX_STREAMS_PER_RELAY = 256;

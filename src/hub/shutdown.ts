@@ -4,7 +4,7 @@ import { logger } from "../utils/logger.ts";
 import { closeStorage } from "../storage/index.ts";
 import { closeKV } from "../kv/index.ts";
 import { stopHeartbeat } from "../ws/heartbeat.ts";
-import { shutdownWarden } from "../warden/index.ts";
+import { closeAllRelays, shutdownWarden } from "../warden/index.ts";
 import { severAllLocalSessions, getActiveSessionCount } from "../tunnels/registry.ts";
 
 export async function performHubShutdown(
@@ -19,7 +19,7 @@ export async function performHubShutdown(
         server.close();
     }
 
-    // 2. Fail pending setups and close lifelines with 1001 hub_shutdown
+    // 2. Close lifelines with 1001 hub_shutdown (streams waiting for a relay session fail)
     await shutdownWarden("hub_shutdown");
 
     // 3. Stop heartbeat sweep
@@ -48,6 +48,8 @@ export async function performHubShutdown(
         severAllLocalSessions("hub_shutdown");
         exitCode = 1;
     }
+    // Relay sessions last until the runtime streams they carry are gone
+    closeAllRelays("hub_shutdown");
 
     // 5. Close storage and KV providers
     await closeStorage();

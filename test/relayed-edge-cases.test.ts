@@ -6,7 +6,6 @@ import { startHub } from "../src/hub/index.ts";
 import { startEdge } from "../src/edge/index.ts";
 import { parseConfig } from "../src/utils/config.ts";
 import { clearHooks } from "../src/utils/hooks.ts";
-import { setSaturationLimits } from "../src/warden/orders.ts";
 import {
     getAvailablePort,
     createTempDir,
@@ -59,64 +58,6 @@ test("relayed-edge-cases: offline edge closes runtime with 1014 edge_disconnecte
         assert.equal(closeResult.code, 1014);
         assert.equal(closeResult.reason, "edge_disconnected");
     } finally {
-        await hub.close();
-        cleanupTempDir(tempDir);
-    }
-});
-
-test("relayed-edge-cases: saturated edge closes runtime with 1013 edge_saturated", async () => {
-    clearHooks();
-    const port = await getAvailablePort();
-    const tempDir = createTempDir("edge-sat-");
-    const config = parseConfig(["--port", String(port), "--data-dir", tempDir]);
-    const hub = await startHub(config);
-
-    let lifelineWs: WebSocket | null = null;
-    try {
-        const baseUrl = `http://127.0.0.1:${port}`;
-        const edgeRes = await jsonFetch(`${baseUrl}/edges`, {
-            method: "POST",
-            body: { name: "Sat Edge" },
-        });
-        assert.equal(edgeRes.status, 201);
-        const edge = edgeRes.data;
-
-        // Connect raw lifeline directly
-        lifelineWs = await connectTestWs(`ws://127.0.0.1:${port}/`, {
-            headers: { Authorization: edge.token },
-        });
-
-        // Create tunnel
-        const tunRes = await jsonFetch(`${baseUrl}/tunnels`, {
-            method: "POST",
-            body: {
-                name: "Sat Tunnel",
-                edgeId: edge.id,
-                internalHost: "127.0.0.1",
-                internalPort: 8080,
-            },
-        });
-        assert.equal(tunRes.status, 201);
-        const token = tunRes.data.token;
-
-        // Force saturation: maxPendingOrders = 0
-        setSaturationLimits(0, 1024 * 1024);
-
-        const ws = tunnelClient(`ws://127.0.0.1:${port}/`, {
-            headers: { Authorization: token },
-        });
-
-        const closeResult = await new Promise<{ code: number; reason: string }>((resolve) => {
-            ws.on("close", (code, reasonBuf) => {
-                resolve({ code, reason: reasonBuf.toString() });
-            });
-        });
-
-        assert.equal(closeResult.code, 1013);
-        assert.equal(closeResult.reason, "edge_saturated");
-    } finally {
-        setSaturationLimits(100, 1024 * 1024);
-        if (lifelineWs) lifelineWs.close();
         await hub.close();
         cleanupTempDir(tempDir);
     }
@@ -192,7 +133,7 @@ test("relayed-edge-cases: relayed deadline timeout closes with 1014 connect_time
         assert.equal(edgeRes.status, 201);
         const edge = edgeRes.data;
 
-        // Connect a raw lifeline WebSocket that never answers connect_tunnel order
+        // A raw lifeline that never dials the relay session it is asked for
         const lifelineWs = await connectTestWs(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: edge.token },
         });

@@ -99,8 +99,8 @@ Once the documentation and architectural specifications are approved, **all defi
     - Every requirement written in the documentation is directly mapped to a test case in `test/*.test.ts` or `test/integration/*.test.ts`.
     - Built on native Node.js tooling: `node:test` and `node:assert/strict` (zero third-party test framework overhead).
 2. **Three-Tier Testing Hierarchy**:
-    - **Unit Tests**: Test pure logic, binary frame parsers, ticket generation algorithms, and token validation.
-    - **Fast Multi-Worker Tests (`ALLOW_FILESYSTEM_MULTIWORKER=true`)**: Test clustering, raw socket migration across worker processes via Primary IPC, ticket claiming (`getdel`), and worker crash recovery in memory and filesystem without external database overhead.
+    - **Unit Tests**: Test pure logic, binary frame parsers, relay session placement, and token validation.
+    - **Fast Multi-Worker Tests (`ALLOW_FILESYSTEM_MULTIWORKER=true`)**: Test clustering, relay requests and raw relay session socket moves across worker processes via Primary IPC, and worker crash recovery in memory and filesystem without external database overhead.
     - **Zero-Mock Integration Tests**: Test real-world protocol interoperability against live containerized services via Docker Compose (PostgreSQL, Redis, MySQL, MongoDB, RustFS S3, Git server, HTTP/socket servers) and automated in-browser client testing via the `fullstackedorg/fullstacked` submodule.
 3. **The Red Phase (Intentional Failure)**:
     - Tests are run _before_ the implementation code is written (`node --test`).
@@ -248,9 +248,9 @@ Because `npm run check` runs Prettier check, TypeScript typecheck, and LOC verif
 The multi-worker test mode (`ALLOW_FILESYSTEM_MULTIWORKER=true`, see [Test Mode](../2-nodes/configuration.md#test-mode-multi-worker-without-postgresql-or-redis)) is built specifically for rapid developer feedback and CI pipelines:
 
 - **Ideal for Unit & E2E Testing**: Runs in milliseconds without booting external database containers or heavyweight background daemons.
-- **95% Code Coverage at All Times**: Perfect for gathering complete line and branch coverage across core routing, socket migration, and process lifecycle logic. The project strictly maintains a minimum of **95% code coverage at all times**.
+- **95% Code Coverage at All Times**: Perfect for gathering complete line and branch coverage across core routing, relay session routing, and process lifecycle logic. The project strictly maintains a minimum of **95% code coverage at all times**.
 - **Isolated Environments**: Assign each test run a temporary folder (`DATA_DIR=$(mktemp -d)`) to execute in complete isolation.
-- **Clustering & IPC Verification**: Exercises raw socket migration, inter-process communication (IPC) between Primary and worker processes, connection saturation, and worker crash recovery entirely in memory and filesystem.
+- **Clustering & IPC Verification**: Exercises relay session socket moves, inter-process communication (IPC) between Primary and worker processes, relay session saturation, and worker crash recovery entirely in memory and filesystem.
 
 ### C. Strong Integration Test Suite with Real Services (Docker Compose & Submodule)
 
@@ -286,7 +286,7 @@ Tests are written using Node.js built-in `node:test` and `node:assert/strict`:
 import test from "node:test";
 import assert from "node:assert/strict";
 
-test("ticket is claimed atomically exactly once", async () => {
+test("a stream waits for a relay session until the deadline", async () => {
     // test logic
 });
 ```

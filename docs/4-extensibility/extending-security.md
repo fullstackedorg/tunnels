@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-    Req["Inbound request or order"] --> Hooks{"Security hooks"}
+    Req["Inbound request or relayed stream"] --> Hooks{"Security hooks"}
     Hooks --> R1["Admin key\n(rest_access)"]
     Hooks --> R2["Client IP allowlist\n(tunnel_request)"]
     Hooks --> R3["Signed tunnel requests\n(tunnel_request)"]
@@ -54,7 +54,7 @@ registerHook("rest_access", (req) => {
 
 ## Recipe 2: Client IP Allowlist
 
-Applied in `tunnel_request`, so it affects runtime sockets only, never lifelines or relayed sockets.
+Applied in `tunnel_request`, so it affects runtime sockets only, never lifelines or relay sessions.
 
 ```typescript
 import net from "node:net";
@@ -101,7 +101,7 @@ This does not prevent replay within the skew window; for strict single use, also
 
 ## Recipe 4: Rate Limiting (Fixed Window)
 
-Applied in `tunnel_request` so Edge lifelines and relayed sockets are never throttled. Returns `429` with `Retry-After`.
+Applied in `tunnel_request` so Edge lifelines and relay sessions are never throttled. Returns `429` with `Retry-After`.
 
 ```typescript
 import { registerHook } from "../src/utils/hooks.ts";

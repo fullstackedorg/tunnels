@@ -7,40 +7,43 @@ flowchart TD
         Resolve --> Gate["lifeline_connect hook"]
         Gate --> Accept["101; replace any older lifeline (superseded)"]
         Accept --> Presence["Presence written to KV once per sweep"]
+        Accept --> Warm["open_relay for this worker\n(one warm relay session)"]
     end
 
-    subgraph R["2. Relayed Sessions"]
-        Req["acquireRelayedStream(tunnel, req, deadline)"] --> Ticket["Create ticket\n(KV TTL CONNECT_TIMEOUT + 2s)"]
-        Ticket --> Where{"Lifeline on this worker?"}
-        Where -->|"Yes"| Send["Check saturation;\nwrite connect_tunnel"]
-        Where -->|"No"| IPC["IPC via Primary to lifeline worker"] --> Send
+    subgraph R["2. Relay Sessions"]
+        RelayConn["Relay session upgrade\n(edg_ token + x-relay-worker)"] --> RGate["Resolve edge; lifeline_connect hook"]
+        RGate --> Same{"Named worker?"}
+        Same -->|"Yes"| Register["Upgrade; register in this worker's pool"]
+        Same -->|"No"| Move["Move raw socket via Primary\nto the named worker"] --> Register
     end
 
-    subgraph M["3. Relayed Socket Arrival"]
-        Arrive["Relayed socket (tmp_ ticket)"] --> Claim["getdel relayed_request:<ticket>"]
-        Claim -->|"null"| R401["401"]
-        Claim -->|"ticket"| Same{"Origin worker?"}
-        Same -->|"Yes"| Handoff["Upgrade; resolve relayed duplex (handoff)"]
-        Same -->|"No"| Migrate["Migrate raw socket via Primary\nto origin worker"] --> Handoff
+    subgraph S["3. Relayed Streams"]
+        Req["openRelayedStream(tunnel, req, deadline, signal)"] --> Pick{"Relay session\nof the Edge here?"}
+        Pick -->|"No"| Ask["open_relay via the lifeline worker;\nwait until deadline"] --> Pick
+        Pick -->|"Yes"| Open["OPEN { reqId, tunnel, client, connectTimeoutMs }"]
+        Open --> Result["OPENED: stream spliced\nRESET: Edge's reason"]
     end
 ```
 
 ## Overview
 
-The Warden runs inside the Hub. It manages Edge lifelines and presence, issues tickets, sends orders, enforces saturation limits, and, in clustered mode, moves relayed sockets to the worker that holds the matching runtime socket. Terms are defined in the [Glossary](../1-concepts/glossary.md); wire formats in the [Protocol Spec](../1-concepts/protocol-spec.md#2-lifeline-protocol).
+The Warden runs inside the Hub. It manages Edge lifelines and presence, keeps the pool of relay sessions each Edge holds to each Hub worker, places relayed streams on them, and, in clustered mode, routes relay requests to the lifeline worker and moves relay session sockets to the worker they were dialed for. Terms are defined in the [Glossary](../1-concepts/glossary.md); wire formats in the [Protocol Spec](../1-concepts/protocol-spec.md#2-lifeline-protocol).
 
 ---
 
 ## 1. Lifelines
 
-When an upgrade presents an edge token:
+When an upgrade presents an edge token without an `x-relay-worker` header:
 
 1. **Resolve**: look the edge up by token through the [entity cache](entity-schemas.md#token-resolution--cache). Unknown token: `401`. Storage or KV unavailable: `503`.
 2. **Gate**: run `lifeline_connect(req, edge)`. `req.deny()` rejects with the hook's status (default `403`); a throw or `HOOK_TIMEOUT` rejects with `500`. Neither puts the Edge in its revoked state.
 3. **Accept** the upgrade and add the lifeline to the heartbeat sweep.
-4. **Newest wins**: if this Edge already has a lifeline (on this worker, or on another worker according to `edge:<id>:worker`), the older one is closed with `1000 superseded`. Pending orders sent on the older lifeline fail with `edge_disconnected`; the older lifeline's cleanup never unregisters the newer lifeline, its presence, or its pending orders. In clustered mode the new lifeline worker sends `close_lifeline { edgeId, reason: "superseded" }` to the old worker through the Primary.
+4. **Newest wins**: if this Edge already has a lifeline (on this worker, or on another worker according to `edge:<id>:worker`), the older one is closed with `1000 superseded`. The older lifeline's cleanup never unregisters the newer lifeline or its presence. In clustered mode the new lifeline worker sends `close_lifeline { edgeId, reason: "superseded" }` to the old worker through the Primary.
 5. **Version**: if the `version` header differs from `edge.version`, the stored value is updated (asynchronously). The field is informational and read-only through the REST API.
 6. **Register**: `edgeLifelines.set(edge.id, ws)`, write presence immediately (below), and `SADD worker:<bootId>:<workerId>:edges <edgeId>`.
+7. **Warm relay session**: if the Edge has no relay session on this worker, write `open_relay` for this worker, so the first stream does not wait for the Edge's dial. The lifeline worker keeps that session open while it holds the lifeline (see [Idle Sessions](#idle-sessions)).
+
+The lifeline worker writes every `open_relay` for the Edge, its own and those other workers ask for (see [Requesting a Session](#requesting-a-session)). When the Edge answers `open_relay_failed { worker }`, the lifeline worker fails its own waiting streams with `relay_dial_failed` when `worker` is itself, and otherwise sends `relay_failed` to `worker`.
 
 ### Presence
 
@@ -61,104 +64,118 @@ The lifeline runs the [bidirectional heartbeat](../1-concepts/protocol-spec.md#3
 
 1. Removes it from `edgeLifelines` (only if it is still the registered lifeline for that Edge).
 2. Unless a newer lifeline for the same Edge is registered on this worker, runs `delIfEquals("edge:<id>:worker", "<bootId>:<workerId>")`, so a newer lifeline registered elsewhere is never unregistered, and `SREM worker:<bootId>:<workerId>:edges <edgeId>`.
-3. Fails every pending order sent on that lifeline with `edge_disconnected` (unless the close reason was `hub_shutdown`, which is used instead).
+3. Unless a newer lifeline replaced it on this worker, fails the streams on this worker that wait for a relay session of that Edge with `edge_disconnected` (or `hub_shutdown` when that was the close reason): no relay session will be dialed on their behalf any more. Streams waiting for a relay session of that Edge on other workers are not told: they fail at their deadline with `connect_timeout`.
 4. Dispatches `lifeline_disconnect(null, edge, reason)` with the lifeline's close reason. When the Hub closed the lifeline, this is the reason the Hub sent (`heartbeat_timeout`, `superseded`, `token_rolled`, `edge_deleted`, `hub_shutdown`), even if the Edge never answered the close handshake; when the Edge closed it, the Edge's reason if it is a taxonomy reason (e.g. `edge_shutdown`), otherwise `client_close`.
 
-Established relayed sessions do not depend on the lifeline and keep running.
+Relay sessions and the streams they carry do not depend on the lifeline and keep running; without a lifeline the worker no longer keeps a warm session, so idle ones close (see [Idle Sessions](#idle-sessions)).
 
 ---
 
-## 2. Relayed Sessions
+## 2. Relay Sessions
 
-`acquireRelayedStream(tunnel, req, deadline)` is called by the [Tunnel Handler](tunnel-handlers.md) after the runtime upgrade was accepted.
+Each Hub worker keeps, per Edge, a pool of the relay sessions that Edge dialed to it: WebSockets carrying many streams, each opened by the Hub for one runtime stream (framing in the [Protocol Spec](../1-concepts/protocol-spec.md#c-relay-sessions)). Edges sit on home networks, where streams sharing one WebSocket wait on each other, so the pool spreads streams over several sessions.
 
-1. **Ticket**: generate `tmp_...`, then:
-    ```typescript
-    await kv.set(
-        `relayed_request:${ticket}`,
-        { originWorker, lifelineWorker, edgeId, reqId, tunnelId },
-        CONNECT_TIMEOUT + 2 // the configured CONNECT_TIMEOUT, in seconds
-    );
-    relayedRequests.set(ticket, { resolve, reject, lifelineWorker, reqId, deadline });
-    ```
-2. **Dispatch**: if the lifeline is on this worker, handle it locally; otherwise send `relayed_tunnel_request` through the Primary to the lifeline worker.
-3. **Lifeline worker**:
-    - No lifeline for this Edge any more (stale presence): fail with `edge_disconnected`.
-    - Pending orders `>= MAX_PENDING_ORDERS`, or `ws.bufferedAmount > MAX_LIFELINE_BUFFER`: fail with `edge_saturated`.
-    - Otherwise record `pendingOrders.set(ticket, { originWorker, reqId, edgeId, expiresAt: deadline + 2000 })` and write `connect_tunnel` with `connectTimeoutMs = deadline - Date.now()` (not sent if not positive; fail with `connect_timeout`).
-4. **Outcomes** (all delivered to the origin worker, which tears the session down with the given reason):
-    - **Handoff**: see [Relayed Socket Arrival](#relayed-socket-arrival). The origin worker notifies the lifeline worker (`relayed_tunnel_handoff`), which deletes the pending order.
-    - **`connect_tunnel_failed`**: the lifeline worker deletes the ticket (`kv.del`), deletes the pending order, and sends `relayed_tunnel_failed` with the Edge's reason, verbatim.
-    - **Lifeline lost**: `edge_disconnected`.
-    - **Runtime disconnects before handoff**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "client_aborted" }, 5)`), deletes its parked entry, ends the session with `client_aborted`, and sends `relayed_tunnel_cancel { ticket, reason: "client_aborted" }` so the lifeline worker looks up `edgeLifelines.get(edgeId)` and writes `cancel_tunnel`.
-    - **KV unavailable** while reading presence or creating the ticket: `stream_error`.
-    - **Deadline**: the origin worker writes a 5-second tombstone (`kv.set("relayed_request:<ticket>", { status: "cancelled", reason: "connect_timeout" }, 5)`), deletes its parked entry, closes the runtime socket with `connect_timeout`, and sends `relayed_tunnel_cancel { ticket, reason: "connect_timeout" }`.
+### Requesting a Session
 
-Pending orders are not given individual timers. Entries past `expiresAt` are ignored and removed by the heartbeat sweep; the sweep delay only affects memory reclamation, never client-visible timing.
+A worker asks the Edge for a session (`requestRelay`) when a stream finds none, when it needs a spare (see [Placement](#placement)), when its lifeline connects, and when its last session closes while streams wait or while it holds the Edge's lifeline:
 
-### Relayed Socket Arrival
+- **Lifeline on this worker**: write `open_relay { worker: <this worker> }` on it.
+- **Clustered, lifeline elsewhere**: read `edge:<id>:worker` and send `relay_request { edgeId, worker }` through the Primary to the lifeline worker, which writes `open_relay { worker }`. A lifeline worker that no longer holds the lifeline answers `relay_failed { reason: "edge_disconnected" }`.
+- **No lifeline at all** (single process, or no presence): the waiting streams fail with `edge_disconnected`. KV unavailable while reading presence: `stream_error`.
 
-A relayed socket may arrive on any worker (the receiving worker):
+One request per Edge per worker is outstanding at a time: a new one is only sent once the previous one was answered (a session came up, or a failure was reported) or 10 seconds later. The lifeline connecting always sends one.
 
-1. **Claim**: always `getdel relayed_request:<ticket>` first, on every worker and in single-process mode. This is the only claim step, so a ticket can be used exactly once even if it is replayed concurrently to several workers.
-    - `null`: `401 Unauthorized`.
-    - `{ status: "cancelled", reason }`: close the incoming socket immediately with that reason (avoids false 401s on cancellations/timeouts).
-2. **Local**: if the ticket's `originWorker` is this worker, look up `relayedRequests.get(ticket)`. If the entry is gone (the session already timed out or aborted), destroy the socket. Otherwise complete the upgrade, wrap it with `createWebSocketStream(ws, { allowHalfOpen: false })`, and resolve the parked promise: this is **handoff**.
-3. **Remote**: otherwise migrate the raw socket to the origin worker (next section), which performs step 2.
-4. After handoff, if the target dial on the Edge later fails, the Edge closes the relayed socket with `1014` and `target_unreachable` / `connect_timeout`; the Tunnel Handler propagates that close to the runtime socket.
+### Accepting a Session
+
+A relay session is an upgrade presenting an edge token and `x-relay-worker: <worker identity>`:
+
+1. **Resolve and gate** exactly like a [lifeline](#1-lifelines): unknown token `401`, storage or KV unavailable `503`, then `lifeline_connect(req, edge)`, whose denial or failure rejects the upgrade. The Edge retries a rejected dial once, then reports `open_relay_failed`.
+2. **Route**: if `x-relay-worker` names another worker (clustered mode), the raw socket is moved to it through the Primary without completing the handshake (see [Clustered Relay Sessions](#4-clustered-relay-sessions)). Otherwise the upgrade completes here.
+3. **Register**: the session joins the Edge's pool on this worker, runs the heartbeat, and wakes every stream of this worker waiting for a session of that Edge.
+
+### Placement
+
+`pickRelay(edgeId)` chooses the session for a new stream:
+
+1. Among the open sessions that are neither clogged nor at `MAX_STREAMS_PER_RELAY` (256) streams, take the one with the fewest streams (ties: the fewest bytes waiting to go out). When all are clogged or full, take the lightest of all.
+2. If no other session is idle (a spare) and the Edge has fewer than `MAX_RELAY_SESSIONS` (8) sessions on this worker, ask the Edge for one more. A stream never waits for that spare: it goes on the chosen session now.
+
+A session is **clogged** while any of these holds:
+
+| Criterion   | Threshold                                                                                                                                 |
+| :---------- | :---------------------------------------------------------------------------------------------------------------------------------------- |
+| Streams     | 32 streams on the session.                                                                                                                |
+| Queued data | More than 512 KiB waiting to go out on the WebSocket for over 50 ms.                                                                      |
+| Round trip  | Smoothed round trip over `2 x` the session's best + 20 ms (measured with a tagged `ping` every second while the session carries streams). |
+
+These limits are constants, not settings.
+
+### Idle Sessions
+
+Every 5 seconds the worker closes sessions that carried no stream for 30 seconds (`RELAY_IDLE_MS`). The Edge's last session on the worker is kept while this worker holds the Edge's lifeline (the warm session), and otherwise closed after `4 x RELAY_IDLE_MS` (2 minutes).
 
 ---
 
-## 3. Clustered Socket Migration
+## 3. Relayed Streams
 
-Node.js workers share no memory and cannot message each other directly; all IPC goes through the Primary. Relayed sockets arrive on arbitrary workers, so a socket must sometimes be moved to its origin worker. Socket migration requires plain TCP sockets, which is why TLS is always terminated by a reverse proxy in front of the Hub (see [Configuration](../2-nodes/configuration.md#deployment-requirement-tls)).
+`openRelayedStream(tunnel, req, deadline, signal)` is called by the [Tunnel Handler](tunnel-handlers.md) for each stream of a relayed tunnel, after the Edge was found online:
+
+1. **Session**: `pickRelay`. If the Edge has none on this worker, request one and wait until one is up. The wait fails at `deadline` (`connect_timeout`), on `signal` (its abort reason: the runtime stream ended or was severed), or with the reported failure (`relay_dial_failed`, `edge_disconnected`, `target_worker_dead`, `stream_error`, `hub_shutdown`, or the sever reason). If no session is there once woken: `relay_dial_failed`.
+2. **Saturation**: the chosen session already carries `MAX_STREAMS_PER_RELAY` (256) streams: `edge_saturated`.
+3. **Open**: `connectTimeoutMs = deadline - Date.now()` (not positive: `connect_timeout`, nothing sent), then `OPEN` with the `RelayStreamOpen` payload `{ reqId, tunnel: { id, name, internalHost, internalPort, metadata }, client: { ip, correlationId }, connectTimeoutMs }`.
+4. **Outcome**:
+    - **`OPENED`**: resolves with the relay stream (a `Duplex`), which the Tunnel Handler splices 1:1 to the runtime stream.
+    - **`RESET` from the Edge**: fails with the Edge's reason, verbatim. A reason outside the taxonomy, or `client_close`, is reported as `stream_error`, or `edge_disconnected` when the relay session itself closed.
+    - **Deadline**: fails with `connect_timeout` and sends `RESET connect_timeout` to the Edge, which drops its dial.
+    - **Abort** (`signal`): fails with the abort reason and sends `RESET` with it to the Edge.
+
+The Edge's side of each stream (gate, target dial, splice) is described in [Edge](../2-nodes/edge.md#stream-setup-and-splicing).
+
+---
+
+## 4. Clustered Relay Sessions
+
+Node.js workers share no memory and cannot message each other directly; all IPC goes through the Primary. Only the lifeline worker can send orders to an Edge, and a relay session upgrade arrives on whichever worker the OS hands the connection to, so requests are routed to the lifeline worker and sockets are moved to the worker they were dialed for. Moving a socket requires plain TCP sockets, which is why TLS is always terminated by a reverse proxy in front of the Hub (see [Configuration](../2-nodes/configuration.md#deployment-requirement-tls)).
 
 ```mermaid
 sequenceDiagram
     autonumber
+    participant A as Worker A (stream)
+    participant P as Primary
+    participant B as Lifeline Worker B
     participant Edge as Edge
     participant C as Receiving Worker C
-    participant KV as Redis
-    participant P as Primary
-    participant A as Origin Worker A
-    participant B as Lifeline Worker B
 
-    Edge->>C: Relayed socket upgrade (Authorization: ticket)
-    C->>KV: GETDEL relayed_request:<ticket>
-    alt null
-        C-->>Edge: 401 Unauthorized
-    else cancelled tombstone
-        C-->>Edge: Close (cancelled reason)
-    else { originWorker: A, lifelineWorker: B, ... }
-        C->>C: Keep socket paused, do not complete the handshake
-        C->>P: relayed_tunnel_socket { ticket, head, headers } + raw socket
-        P->>A: forward message + raw socket
-        A->>A: Parked entry present? Else destroy socket
-        A->>A: handleUpgrade(reqAdapter, socket, head) = handoff
-        A->>P: relayed_tunnel_handoff { ticket }
-        P->>B: forward, B deletes pending order
-    end
+    A->>A: No relay session of the Edge here; stream waits (until deadline)
+    A->>P: relay_request { edgeId, worker: A }
+    P->>B: forward
+    B->>Edge: open_relay { worker: A } (lifeline)
+    Edge->>C: Relay session upgrade (edge token, x-relay-worker: A)
+    C->>C: Resolve edge, lifeline_connect; keep socket paused
+    C->>P: relay_session_socket { edgeId, head, headers } + raw socket
+    P->>A: forward message + raw socket
+    A->>A: handleUpgrade(reqAdapter, socket, head); register; wake the stream
+    A->>Edge: OPEN { reqId, tunnel, client, connectTimeoutMs }
+    Edge-->>A: OPENED (or RESET reason)
 ```
 
 Migration details:
 
 - The receiving worker neither completes the handshake nor reads further bytes; it forwards the request headers and the already-read `head` bytes with the socket.
-- The Primary and workers use IPC `serialization: "advanced"`, so `head` arrives as a `Buffer`. The origin worker passes it as the third argument of `wss.handleUpgrade` and never calls `socket.unshift`.
-- The origin worker builds a minimal `IncomingMessage`-compatible adapter (`method`, `url: "/"`, `headers`, `socket`) for `ws`.
+- The Primary and workers use IPC `serialization: "advanced"`, so `head` arrives as a `Buffer`. The named worker passes it as the third argument of `wss.handleUpgrade` and never calls `socket.unshift`.
+- The named worker builds a minimal `IncomingMessage`-compatible adapter (`method`, `url: "/"`, `headers`, `socket`) for `ws`.
 
 ### IPC Messages
 
-All messages carry `type`, `target` (worker identity), and `ticket` where applicable.
+All messages carry `type` and `target` (worker identity).
 
-| `type`                   | Route                               | Payload                                                             | Purpose                                                                                                                |
-| :----------------------- | :---------------------------------- | :------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------- |
-| `relayed_tunnel_request` | origin → lifeline worker            | `{ ticket, reqId, edgeId, tunnel, client, deadline, originWorker }` | Ask the lifeline worker to send `connect_tunnel`. `deadline` is absolute epoch ms.                                     |
-| `relayed_tunnel_cancel`  | origin or Primary → lifeline worker | `{ ticket, reason }`                                                | Look up `edgeId` in `pendingOrders`, send `cancel_tunnel` on that lifeline, and delete pending order.                  |
-| `relayed_tunnel_failed`  | lifeline worker or Primary → origin | `{ ticket, reason }`                                                | Fail the session with `reason` (Edge reason verbatim, or `edge_disconnected`, `edge_saturated`, `target_worker_dead`). |
-| `relayed_tunnel_socket`  | receiving → origin worker           | `{ ticket, head, headers }` + socket                                | Socket migration.                                                                                                      |
-| `relayed_tunnel_handoff` | origin → lifeline worker            | `{ ticket }`                                                        | Delete the pending order.                                                                                              |
-| `close_lifeline`         | any → lifeline worker               | `{ edgeId, reason }`                                                | Close a lifeline (`superseded`, `token_rolled`, `edge_deleted`).                                                       |
-| `sever_sessions`         | any → all workers                   | `{ tunnelId?, edgeId?, reason }`                                    | Revocation broadcast (see [Session Registry](tunnel-handlers.md#session-registry)).                                    |
+| `type`                 | Route                               | Payload                              | Purpose                                                                                                                               |
+| :--------------------- | :---------------------------------- | :----------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------ |
+| `relay_request`        | worker → lifeline worker            | `{ edgeId, worker }`                 | Write `open_relay { worker }` on the Edge's lifeline; answered with `relay_failed` (`edge_disconnected`) when there is none.          |
+| `relay_failed`         | lifeline worker or Primary → worker | `{ edgeId, reason? }`                | Fail the streams waiting for a relay session of that Edge with `reason` (default `relay_dial_failed`).                                |
+| `relay_session_socket` | receiving worker → named worker     | `{ edgeId, head, headers }` + socket | Move a relay session socket to the worker named in `x-relay-worker`.                                                                  |
+| `close_lifeline`       | any → lifeline worker               | `{ edgeId, reason }`                 | Close a lifeline (`superseded`, `token_rolled`, `edge_deleted`).                                                                      |
+| `sever_sessions`       | any → all workers                   | `{ tunnelId?, edgeId?, reason }`     | Revocation broadcast (see [Session Registry](tunnel-handlers.md#session-registry)); with an `edgeId`, also closes its relay sessions. |
 
 ### Dead Workers
 
@@ -166,9 +183,8 @@ The Primary initializes the same KV provider as the workers (Redis, or the share
 
 When the Primary cannot deliver a message because the target worker is gone:
 
-- A migrating socket is destroyed.
-- If the origin worker died: Primary sends `relayed_tunnel_cancel { ticket, reason: "target_worker_dead" }` to the lifeline worker, which writes `cancel_tunnel` to the Edge and cleans up the pending order.
-- If the lifeline worker died: Primary sends `relayed_tunnel_failed { ticket, reason: "target_worker_dead" }` to the origin worker, which closes the runtime socket.
+- A moving socket is destroyed; the Edge's dial fails and it reports `open_relay_failed`.
+- If the lifeline worker died: the Primary answers `relay_request` with `relay_failed { reason: "target_worker_dead" }` to the worker that asked, whose waiting streams fail with it.
 
 When a worker exits, the Primary forks a replacement and cleans up that worker's presence:
 
@@ -183,7 +199,7 @@ cluster.on("exit", async (worker) => {
 });
 ```
 
-Sessions owned by the dead worker end when their sockets close. Edges whose lifelines were on it reconnect and land on another worker.
+Sessions owned by the dead worker end when their sockets close, and so do the relay sessions it held (the Edge ends their streams). Edges whose lifelines were on it reconnect and land on another worker.
 
 ---
 
@@ -191,24 +207,25 @@ Sessions owned by the dead worker end when their sockets close. Edges whose life
 
 1. The change is committed in storage, then the edge's cached entity and presence keys are evicted.
 2. The lifeline is closed with `1000 token_rolled` or `1000 edge_deleted` (via `close_lifeline` in clustered mode); `lifeline_disconnect` fires.
-3. All sessions relayed through that Edge are closed with the same reason (via `sever_sessions`).
+3. All sessions relayed through that Edge are closed with the same reason (via `sever_sessions`), and every worker closes the Edge's relay sessions with it; streams waiting for one fail with it too.
 4. The Edge enters its [revoked state](../2-nodes/edge.md#revocation-handling). Further attempts with the old token get `401`.
 
-On Hub shutdown, every pending order on this worker's lifelines is cancelled (`cancel_tunnel` with `hub_shutdown`), parked relayed requests fail with `hub_shutdown`, and lifelines are closed with `1001 hub_shutdown`; Edges reconnect with backoff.
+On Hub shutdown, lifelines are closed with `1001 hub_shutdown` (streams still waiting for a relay session fail with `hub_shutdown`); relay sessions stay up while runtime sessions drain, then are closed with `1001 hub_shutdown`. Edges reconnect with backoff.
 
 ---
 
 ## Internal API
 
 ```typescript
-/** Resolves with the relayed duplex at handoff; rejects with a taxonomy reason. */
-export function acquireRelayedStream(
+/** Resolves with the relay stream once the Edge answered OPENED; rejects with a taxonomy reason. */
+export function openRelayedStream(
     tunnel: Tunnel,
     req: IncomingMessageWithDeny,
-    deadline: number
+    deadline: number,
+    signal?: AbortSignal
 ): Promise<Duplex>;
 
-/** Handles an upgrade presenting an edge token (after resolution). */
+/** Handles an upgrade presenting an edge token (after resolution), without x-relay-worker. */
 export function wardenLifeline(
     req: IncomingMessageWithDeny,
     socket: Duplex,
@@ -216,12 +233,13 @@ export function wardenLifeline(
     edge: Edge
 ): Promise<void>;
 
-/** Handles an upgrade presenting a ticket. */
-export function wardenRelayedSocket(
+/** Handles an upgrade presenting an edge token and x-relay-worker (after resolution). */
+export function wardenRelaySession(
     req: IncomingMessageWithDeny,
     socket: Duplex,
-    head: Buffer
+    head: Buffer,
+    edge: Edge
 ): Promise<void>;
 ```
 
-Settings used by the Warden (`CONNECT_TIMEOUT`, `HEARTBEAT_*`, `MAX_PENDING_ORDERS`, `MAX_LIFELINE_BUFFER`, `WORKERS`, `REDIS_URL`) are described in the [Configuration Reference](../2-nodes/configuration.md).
+Settings used by the Warden (`CONNECT_TIMEOUT`, `HEARTBEAT_*`, `WORKERS`, `REDIS_URL`) are described in the [Configuration Reference](../2-nodes/configuration.md). The relay session pool limits above are constants.

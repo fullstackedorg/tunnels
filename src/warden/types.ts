@@ -8,90 +8,53 @@ export interface EdgeTunnel {
     metadata: Record<string, any>;
 }
 
-export interface ConnectTunnelOrder {
-    type: "connect_tunnel";
+/** OPEN payload of a stream the Hub opens on an Edge's relay session (JSON). */
+export interface RelayStreamOpen {
     reqId: string;
-    ticket: string;
     tunnel: EdgeTunnel;
     client: {
         ip: string;
         correlationId?: string;
     };
+    /** What is left of the Hub's connect budget when the stream opens. */
     connectTimeoutMs: number;
 }
 
-export interface CancelTunnelOrder {
-    type: "cancel_tunnel";
-    reqId: string;
-    ticket: string;
-    reason: Reason;
+/** Hub → Edge (lifeline): dial one more relay session to the Hub worker `worker`. */
+export interface OpenRelayOrder {
+    type: "open_relay";
+    worker: string;
 }
 
-export interface ConnectTunnelFailedOrder {
-    type: "connect_tunnel_failed";
-    reqId: string;
-    ticket: string;
-    reason: Reason;
+/** Edge → Hub (lifeline): the relay session asked for by `worker` could not be dialed. */
+export interface OpenRelayFailed {
+    type: "open_relay_failed";
+    worker: string;
 }
 
-export type LifelineOrder = ConnectTunnelOrder | CancelTunnelOrder | ConnectTunnelFailedOrder;
-
-export interface ActiveTicketData {
-    originWorker: string;
-    lifelineWorker: string;
+/** Worker → lifeline worker: send `open_relay` for `worker` on the Edge's lifeline. */
+export interface IpcRelayRequest {
+    type: "relay_request";
+    target: string;
     edgeId: string;
-    reqId: string;
-    tunnelId: string;
+    worker: string;
 }
 
-export interface CancelledTicketData {
-    status: "cancelled";
-    reason: Reason;
-}
-
-export type TicketData = ActiveTicketData | CancelledTicketData;
-
-export interface IpcRelayedTunnelRequest {
-    type: "relayed_tunnel_request";
+/** Lifeline worker → worker: the Edge could not dial the relay session it asked for. */
+export interface IpcRelayFailed {
+    type: "relay_failed";
     target: string;
-    ticket: string;
-    reqId: string;
     edgeId: string;
-    tunnel: EdgeTunnel;
-    client: {
-        ip: string;
-        correlationId?: string;
-    };
-    deadline: number;
-    originWorker: string;
+    reason?: Reason;
 }
 
-export interface IpcRelayedTunnelCancel {
-    type: "relayed_tunnel_cancel";
+/** A relay session socket for another worker (the socket travels as the IPC handle). */
+export interface IpcRelaySessionSocket {
+    type: "relay_session_socket";
     target: string;
-    ticket: string;
-    reason: Reason;
-}
-
-export interface IpcRelayedTunnelFailed {
-    type: "relayed_tunnel_failed";
-    target: string;
-    ticket: string;
-    reason: Reason;
-}
-
-export interface IpcRelayedTunnelSocket {
-    type: "relayed_tunnel_socket";
-    target: string;
-    ticket: string;
+    edgeId: string;
     head: Buffer;
     headers: Record<string, any>;
-}
-
-export interface IpcRelayedTunnelHandoff {
-    type: "relayed_tunnel_handoff";
-    target: string;
-    ticket: string;
 }
 
 export interface IpcCloseLifeline {
@@ -109,10 +72,4 @@ export interface IpcSeverSessions {
 }
 
 export type WardenIpcMessage =
-    | IpcRelayedTunnelRequest
-    | IpcRelayedTunnelCancel
-    | IpcRelayedTunnelFailed
-    | IpcRelayedTunnelSocket
-    | IpcRelayedTunnelHandoff
-    | IpcCloseLifeline
-    | IpcSeverSessions;
+    IpcRelayRequest | IpcRelayFailed | IpcRelaySessionSocket | IpcCloseLifeline | IpcSeverSessions;

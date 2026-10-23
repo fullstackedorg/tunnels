@@ -208,13 +208,18 @@ export async function connectRawLifeline(
     edgeToken: string,
     options: WebSocket.ClientOptions = {}
 ): Promise<{ ws: WebSocket; orders: any[] }> {
-    const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
-        ...options,
-        headers: { Authorization: edgeToken, ...(options.headers || {}) },
-    });
     const orders: any[] = [];
-    ws.on("message", (data: Buffer) => {
-        orders.push(JSON.parse(data.toString("utf-8")));
+    const ws = await new Promise<WebSocket>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${hubPort}/`, {
+            ...options,
+            headers: { Authorization: edgeToken, ...(options.headers || {}) },
+        });
+        // the Hub orders a relay session right after the upgrade: listen before open
+        socket.on("message", (data: Buffer) => {
+            orders.push(JSON.parse(data.toString("utf-8")));
+        });
+        socket.once("open", () => resolve(socket));
+        socket.once("error", reject);
     });
     return { ws, orders };
 }

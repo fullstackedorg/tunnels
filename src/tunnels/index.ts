@@ -12,7 +12,7 @@ import { MuxSession, type MuxStream } from "../mux/session.ts";
 import { registerSession, unregisterSession } from "./registry.ts";
 import { connectDirectTarget } from "./direct.ts";
 import { spliceTunnelStreams } from "./splicing.ts";
-import { acquireRelayedStream, isEdgeOnline } from "../warden/index.ts";
+import { openRelayedStream, isEdgeOnline } from "../warden/index.ts";
 
 export { severSessions } from "./registry.ts";
 
@@ -158,7 +158,7 @@ async function runStream(sessionReq: IncomingMessageWithDeny, stream: MuxStream,
     let targetStream: Duplex;
     try {
         targetStream = tunnel.edgeId
-            ? await acquireRelayedStream(tunnel, req, deadline, abortDial.signal)
+            ? await openRelayedStream(tunnel, req, deadline, abortDial.signal)
             : await connectDirectTarget(
                   tunnel.internalHost,
                   tunnel.internalPort,

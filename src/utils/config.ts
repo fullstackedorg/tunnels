@@ -10,8 +10,6 @@ import {
     DEFAULT_REVOKED_POLL_INTERVAL,
     DEFAULT_ENTITY_CACHE_TTL,
     DEFAULT_NEGATIVE_CACHE_TTL,
-    DEFAULT_MAX_PENDING_ORDERS,
-    DEFAULT_MAX_LIFELINE_BUFFER,
     DEFAULT_DATA_DIR,
     DEFAULT_WORKERS,
     DEFAULT_RECONNECT_INTERVAL,
@@ -41,8 +39,6 @@ export interface AppConfig {
     trustedProxies: string[];
     entityCacheTtl: number;
     negativeCacheTtl: number;
-    maxPendingOrders: number;
-    maxLifelineBuffer: number;
 
     // Edge settings
     hubUrl?: string;
@@ -228,22 +224,6 @@ export function parseConfig(
             env,
             Number,
             DEFAULT_NEGATIVE_CACHE_TTL
-        ),
-        maxPendingOrders: getVal(
-            ["max-pending-orders"],
-            ["MAX_PENDING_ORDERS"],
-            cli,
-            env,
-            Number,
-            DEFAULT_MAX_PENDING_ORDERS
-        ),
-        maxLifelineBuffer: getVal(
-            ["max-lifeline-buffer"],
-            ["MAX_LIFELINE_BUFFER"],
-            cli,
-            env,
-            Number,
-            DEFAULT_MAX_LIFELINE_BUFFER
         ),
 
         hubUrl,

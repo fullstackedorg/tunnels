@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import { startHub, type HubInstance } from "../src/hub/index.ts";
 import { parseConfig } from "../src/utils/config.ts";
 import { kv } from "../src/kv/index.ts";
-import { createTicket, claimTicket, cancelTicketTombstone } from "../src/warden/tickets.ts";
+import { EventEmitter } from "node:events";
 import {
-    setSaturationLimits,
-    isLifelineSaturated,
-    recordPendingOrder,
-    deletePendingOrder,
-} from "../src/warden/orders.ts";
+    closeRelays,
+    configureRelays,
+    pickRelay,
+    registerRelay,
+    relayRequestFailed,
+    waitForRelay,
+} from "../src/warden/relays.ts";
+import { openRelayedStream } from "../src/warden/index.ts";
+import { MAX_STREAMS_PER_RELAY } from "../src/constants.ts";
 import {
     getAvailablePort,
     createTempDir,
@@ -18,70 +22,119 @@ import {
     jsonFetch,
 } from "./helpers.ts";
 
-test("warden: tickets atomic creation, claim (getdel), and cancellation tombstones", async () => {
-    const ticket = await createTicket("worker-1", "worker-2", "edge-1", "req-1", "tunnel-1", 10);
-    assert.ok(ticket.startsWith("tmp_"));
+// Enough of a ws WebSocket for a relay session that only opens streams.
+function fakeRelayWs() {
+    const ws: any = new EventEmitter();
+    Object.assign(ws, {
+        OPEN: 1,
+        readyState: 1,
+        bufferedAmount: 0,
+        sent: [] as Buffer[],
+        send(frame: Buffer) {
+            ws.sent.push(frame);
+        },
+        ping() {},
+        close() {
+            ws.readyState = 3;
+            ws.emit("close", 1000, Buffer.from("client_close"));
+        },
+        terminate() {
+            ws.close();
+        },
+    });
+    return ws;
+}
 
-    // First claim should succeed (atomic getdel)
-    const claimed1 = await claimTicket(ticket);
-    assert.ok(claimed1);
-    assert.equal((claimed1 as any).originWorker, "worker-1");
-    assert.equal((claimed1 as any).lifelineWorker, "worker-2");
-    assert.equal((claimed1 as any).edgeId, "edge-1");
+test("warden: relay placement spreads streams, asks for a spare, skips clogged sessions", () => {
+    const requests: string[] = [];
+    configureRelays({ request: (id) => requests.push(id), keepWarm: () => false });
+    const edge = "edge-place-1";
 
-    // Second claim should return null
-    const claimed2 = await claimTicket(ticket);
-    assert.equal(claimed2, null);
+    assert.equal(pickRelay(edge), undefined);
 
-    // Cancel tombstone creates status: "cancelled"
-    const cancelTicket = await createTicket(
-        "worker-1",
-        "worker-2",
-        "edge-1",
-        "req-2",
-        "tunnel-1",
-        10
-    );
-    await cancelTicketTombstone(cancelTicket, "connect_timeout");
-    const claimedCancel = await claimTicket(cancelTicket);
-    assert.ok(claimedCancel);
-    assert.equal((claimedCancel as any).status, "cancelled");
-    assert.equal((claimedCancel as any).reason, "connect_timeout");
+    const r1 = registerRelay(edge, fakeRelayWs());
+    // the only session gets the stream; with no spare left the Edge is asked for one
+    assert.equal(pickRelay(edge), r1);
+    assert.deepEqual(requests, [edge]);
+    r1.session.startStream();
+
+    const r2 = registerRelay(edge, fakeRelayWs());
+    assert.equal(pickRelay(edge), r2, "the session with the fewest streams");
+    r2.session.startStream();
+    r2.session.startStream();
+
+    // r1 carries fewer streams but its WebSocket has been backed up for a while: skipped
+    (r1.ws as any).bufferedAmount = 1024 * 1024;
+    r1.queuedSince = Date.now() - 1000;
+    assert.equal(pickRelay(edge), r2);
+    (r1.ws as any).bufferedAmount = 0;
+    assert.equal(pickRelay(edge), r1);
+
+    // a round trip grown past twice its best is clogged too
+    r1.rttMin = 10;
+    r1.rttSmooth = 80;
+    assert.equal(pickRelay(edge), r2);
+
+    assert.equal(closeRelays(edge, "edge_deleted"), 2);
+    assert.equal(pickRelay(edge), undefined);
 });
 
-test("warden: lifeline saturation limits check pending orders count and buffer", () => {
-    setSaturationLimits(2, 1024);
+test("warden: streams wait for a relay session until it comes, fails, or the deadline", async () => {
+    configureRelays({ request: () => {}, keepWarm: () => false });
+    const edge = "edge-wait-1";
 
-    const fakeWs: any = { bufferedAmount: 0 };
-    assert.equal(isLifelineSaturated("edge-sat-1", fakeWs), false);
+    await assert.rejects(waitForRelay(edge, Date.now() + 50), (r) => r === "connect_timeout");
 
-    recordPendingOrder("t1", {
-        originWorker: "1:1",
-        reqId: "r1",
-        edgeId: "edge-sat-1",
-        expiresAt: Date.now() + 5000,
-    });
-    assert.equal(isLifelineSaturated("edge-sat-1", fakeWs), false);
+    const failed = waitForRelay(edge, Date.now() + 5000);
+    relayRequestFailed(edge);
+    await assert.rejects(failed, (r) => r === "relay_dial_failed");
 
-    recordPendingOrder("t2", {
-        originWorker: "1:1",
-        reqId: "r2",
-        edgeId: "edge-sat-1",
-        expiresAt: Date.now() + 5000,
-    });
-    // Now count is 2 (equal to limit)
-    assert.equal(isLifelineSaturated("edge-sat-1", fakeWs), true);
+    const abort = new AbortController();
+    const aborted = waitForRelay(edge, Date.now() + 5000, abort.signal);
+    abort.abort("client_aborted");
+    await assert.rejects(aborted, (r) => r === "client_aborted");
 
-    deletePendingOrder("t1");
-    deletePendingOrder("t2");
-    assert.equal(isLifelineSaturated("edge-sat-1", fakeWs), false);
+    const arrived = waitForRelay(edge, Date.now() + 5000);
+    registerRelay(edge, fakeRelayWs());
+    await arrived;
+    closeRelays(edge, "edge_deleted");
+});
 
-    // Buffer saturation
-    fakeWs.bufferedAmount = 2048;
-    assert.equal(isLifelineSaturated("edge-sat-1", fakeWs), true);
+test("warden: a relayed stream opens with the target in its OPEN, or edge_saturated when full", async () => {
+    configureRelays({ request: () => {}, keepWarm: () => false });
+    const edge = "edge-open-1";
+    const ws = fakeRelayWs();
+    const relay = registerRelay(edge, ws);
+    const tunnel: any = {
+        id: "t1",
+        name: "n",
+        internalHost: "10.0.0.5",
+        internalPort: 5432,
+        edgeId: edge,
+        metadata: {},
+    };
+    const req: any = { id: "s.1", clientIp: "203.0.113.1" };
 
-    // Reset default saturation limits
-    setSaturationLimits(100, 64 * 1024);
+    const opening = openRelayedStream(tunnel, req, Date.now() + 1000);
+    const open = ws.sent.at(-1) as Buffer;
+    assert.equal(open[0], 1, "an OPEN frame");
+    const payload = JSON.parse(open.subarray(5).toString("utf-8"));
+    assert.equal(payload.tunnel.internalHost, "10.0.0.5");
+    assert.equal(payload.tunnel.internalPort, 5432);
+    assert.ok(payload.connectTimeoutMs > 0 && payload.connectTimeoutMs <= 1000);
+    // the Edge refuses: RESET with its reason
+    const id = open.readUInt32BE(1);
+    const reset = Buffer.concat([Buffer.from([6, 0, 0, 0, 0]), Buffer.from("target_unreachable")]);
+    reset.writeUInt32BE(id, 1);
+    ws.emit("message", reset, true);
+    await assert.rejects(opening, (e: any) => e.reason === "target_unreachable");
+
+    for (let i = relay.session.size; i < MAX_STREAMS_PER_RELAY; i++) relay.session.startStream();
+    await assert.rejects(
+        openRelayedStream(tunnel, req, Date.now() + 1000),
+        (e: any) => e.reason === "edge_saturated"
+    );
+    closeRelays(edge, "edge_deleted");
 });
 
 test("warden: lifeline connection, presence in KV, and superseding older lifeline", async () => {

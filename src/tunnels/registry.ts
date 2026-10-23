@@ -30,12 +30,20 @@ export function getActiveSessionCount(): number {
     return activeSessions.size;
 }
 
+let severEdgeListener: ((edgeId: string, reason: Reason) => void) | null = null;
+
+/** Called when an Edge's sessions are severed on this worker (its relay sessions close too). */
+export function setSeverEdgeListener(fn: ((edgeId: string, reason: Reason) => void) | null): void {
+    severEdgeListener = fn;
+}
+
 export function severLocalSessions(
     filter: { tunnelId?: string; edgeId?: string },
     reason: Reason = "token_rolled"
 ): number {
     let severed = 0;
     const code = CLOSE_CODES[reason] ?? 1000;
+    if (filter.edgeId && !filter.tunnelId) severEdgeListener?.(filter.edgeId, reason);
 
     for (const [id, session] of activeSessions.entries()) {
         if (filter.tunnelId && session.tunnelId !== filter.tunnelId) {

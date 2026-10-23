@@ -5,7 +5,7 @@ import { decorateRequest, type IncomingMessageWithDeny } from "./deny.ts";
 import { runGatingHook } from "../utils/hooks.ts";
 import { handleApiRequest } from "../api/index.ts";
 import { resolveToken } from "../entities/cache.ts";
-import { wardenLifeline, wardenRelayedSocket } from "../warden/index.ts";
+import { RELAY_WORKER_HEADER, wardenLifeline, wardenRelaySession } from "../warden/index.ts";
 import { handleTunnelUpgrade } from "../tunnels/index.ts";
 
 export type WebSocketRouteHandler = (
@@ -80,11 +80,6 @@ export function createHttpServer(config: AppConfig): http.Server {
             return;
         }
 
-        if (token.startsWith("tmp_")) {
-            await wardenRelayedSocket(decorated, socket, head);
-            return;
-        }
-
         if (token.startsWith("edg_")) {
             let resolved;
             try {
@@ -97,7 +92,12 @@ export function createHttpServer(config: AppConfig): http.Server {
                 decorated.deny(401, "Unauthorized");
                 return;
             }
-            await wardenLifeline(decorated, socket, head, resolved.entity as any);
+            // An Edge dials its lifeline, and relay sessions naming the Hub worker they are for
+            if (req.headers[RELAY_WORKER_HEADER]) {
+                await wardenRelaySession(decorated, socket, head, resolved.entity as any);
+            } else {
+                await wardenLifeline(decorated, socket, head, resolved.entity as any);
+            }
             return;
         }
 

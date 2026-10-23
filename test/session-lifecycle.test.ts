@@ -175,7 +175,7 @@ test("session-lifecycle: target failure after handoff propagates the Edge's clos
     }
 });
 
-test("session-lifecycle: hub shutdown cancels pending relayed setups on the Edge", async () => {
+test("session-lifecycle: hub shutdown fails streams waiting for a relay session", async () => {
     clearHooks();
     const h = await startTestHub();
     try {
@@ -191,8 +191,8 @@ test("session-lifecycle: hub shutdown cancels pending relayed setups on the Edge
         const ws = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
-        await waitFor(() => lifeline.orders.some((o) => o.type === "connect_tunnel"));
-        const ticket = lifeline.orders[0].ticket;
+        // the Edge never dials the relay session it is asked for: the stream waits
+        await waitFor(() => lifeline.orders.some((o) => o.type === "open_relay"));
 
         const runtimeClosed = waitForClose(ws);
         const lifelineClosed = waitForClose(lifeline.ws);
@@ -200,10 +200,6 @@ test("session-lifecycle: hub shutdown cancels pending relayed setups on the Edge
 
         assert.deepEqual(await runtimeClosed, { code: 1001, reason: "hub_shutdown" });
         assert.deepEqual(await lifelineClosed, { code: 1001, reason: "hub_shutdown" });
-        const cancel = lifeline.orders.find((o) => o.type === "cancel_tunnel");
-        assert.ok(cancel, "Edge should receive cancel_tunnel before the lifeline closes");
-        assert.equal(cancel.ticket, ticket);
-        assert.equal(cancel.reason, "hub_shutdown");
         assert.deepEqual(ends, ["hub_shutdown"]);
     } finally {
         await h.close();

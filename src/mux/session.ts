@@ -21,6 +21,8 @@ export interface MuxSessionOptions {
     onOpen?: (stream: MuxStream, payload: Buffer) => void;
     /** Most streams open at once; an OPEN beyond it is answered with RESET `stream_limit`. */
     maxStreams?: number;
+    /** The reason streams end with when the WebSocket closes (default: the peer's, else client_close). */
+    endReason?: (peerReason: string) => string;
 }
 
 /**
@@ -48,7 +50,8 @@ export class MuxSession implements StreamTransport {
             if (isBinary) this.handleMessage(data as Buffer);
         });
         ws.once("close", (_code: number, reasonBuf: Buffer) => {
-            this.end(reasonBuf?.toString("utf-8") || "client_close");
+            const peer = reasonBuf?.toString("utf-8") || "";
+            this.end(options.endReason ? options.endReason(peer) : peer || "client_close");
         });
     }
 

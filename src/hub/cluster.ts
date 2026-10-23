@@ -72,27 +72,14 @@ export function startHubPrimary(
                 if (handle && typeof handle.destroy === "function") {
                     handle.destroy();
                 }
-                if (msg.type === "relayed_tunnel_socket") {
-                    // Origin worker dead; notify lifeline worker
-                    const lifelineWorkerId = msg.lifelineWorker?.split(":")[1];
-                    const lifelineWorker = cluster.workers?.[lifelineWorkerId];
-                    if (lifelineWorker && lifelineWorker.isConnected()) {
-                        lifelineWorker.send({
-                            type: "relayed_tunnel_cancel",
-                            target: msg.lifelineWorker,
-                            ticket: msg.ticket,
-                            reason: "target_worker_dead",
-                        });
-                    }
-                } else if (msg.type === "relayed_tunnel_request") {
-                    // Lifeline worker dead; notify origin worker
-                    const originWorkerId = msg.originWorker?.split(":")[1];
-                    const originWorker = cluster.workers?.[originWorkerId];
-                    if (originWorker && originWorker.isConnected()) {
-                        originWorker.send({
-                            type: "relayed_tunnel_failed",
-                            target: msg.originWorker,
-                            ticket: msg.ticket,
+                if (msg.type === "relay_request") {
+                    // Lifeline worker dead: the worker that asked for a relay session stops waiting
+                    const askingWorker = cluster.workers?.[msg.worker?.split(":")[1]];
+                    if (askingWorker && askingWorker.isConnected()) {
+                        askingWorker.send({
+                            type: "relay_failed",
+                            target: msg.worker,
+                            edgeId: msg.edgeId,
                             reason: "target_worker_dead",
                         });
                     }

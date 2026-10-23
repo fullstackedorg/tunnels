@@ -9,13 +9,13 @@ flowchart TD
     Flag -->|"No"| Invalid["Startup error:\nclustering requires PostgreSQL + Redis"]
     Flag -->|"Yes"| FileKV["FileKVProvider\n(test only, warning logged)"] --> Uses
     Workers -->|"No"| MemKV["MemoryKVProvider"]
-    RedisKV --> Uses["Tickets, presence, entity cache"]
+    RedisKV --> Uses["Presence, entity cache"]
     MemKV --> Uses
 ```
 
 ## Overview
 
-The KV store holds short-lived coordination data: tickets, Edge presence, and the entity cache. The Hub uses an in-memory provider in single-process mode (no disk I/O) and Redis when `REDIS_URL` is set, which is required when `WORKERS > 1`. For multi-worker tests without Redis, a file-backed provider can be enabled explicitly (see [`FileKVProvider`](#filekvprovider-test-only)). The Edge never uses a KV store.
+The KV store holds short-lived coordination data: Edge presence and the entity cache. The Hub uses an in-memory provider in single-process mode (no disk I/O) and Redis when `REDIS_URL` is set, which is required when `WORKERS > 1`. For multi-worker tests without Redis, a file-backed provider can be enabled explicitly (see [`FileKVProvider`](#filekvprovider-test-only)). The Edge never uses a KV store.
 
 ## `KVProvider`
 
@@ -45,16 +45,15 @@ All methods are mandatory in every provider.
 
 ## Key Registry
 
-| Key                                            | Owner        | Value                                                                                            | TTL                                                                  | Purpose                                                                                                                                             |
-| :--------------------------------------------- | :----------- | :----------------------------------------------------------------------------------------------- | :------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `relayed_request:<ticket>`                     | Warden       | `{ originWorker, lifelineWorker, edgeId, reqId, tunnelId }` or `{ status: "cancelled", reason }` | `CONNECT_TIMEOUT + 2s` (active ticket) or `5s` (cancelled tombstone) | Ticket. Claimed only with `getdel`. If cancelled, dial terminates cleanly with the recorded reason. See [Warden](warden.md#relayed-socket-arrival). |
-| `edge:<edgeId>:worker`                         | Warden       | Worker identity `<bootId>:<workerId>`                                                            | `2 * HEARTBEAT_TIMEOUT` (60s)                                        | Which worker holds the lifeline. Refreshed once per sweep; removed with `delIfEquals`. See [Presence](warden.md#presence).                          |
-| `edge:<edgeId>:last_seen`                      | Warden       | Unix seconds                                                                                     | 30 days rolling TTL                                                  | Last frame received on the lifeline. Refreshed on activity; auto-pruned after 30 days of inactivity.                                                |
-| `worker:<bootId>:<workerId>:edges`             | Warden       | Set of edge ids                                                                                  | none (deleted when the worker exits or via primary IPC sweep)        | Reverse index for cleanup after a worker crash. Maintained with `sadd` / `srem`.                                                                    |
-| `entity:tunnel:<token>`, `entity:edge:<token>` | Entity cache | Entity JSON                                                                                      | `ENTITY_CACHE_TTL`                                                   | Token resolution cache, populated on read or write-through. See [Entity Schemas](entity-schemas.md#invalidation-order-write-through).               |
-| `entity:miss:<token>`                          | Entity cache | `1`                                                                                              | `NEGATIVE_CACHE_TTL` (5s)                                            | Negative cache tombstone for unknown or revoked tokens.                                                                                             |
+| Key                                            | Owner        | Value                                 | TTL                                                           | Purpose                                                                                                                               |
+| :--------------------------------------------- | :----------- | :------------------------------------ | :------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------ |
+| `edge:<edgeId>:worker`                         | Warden       | Worker identity `<bootId>:<workerId>` | `2 * HEARTBEAT_TIMEOUT` (60s)                                 | Which worker holds the lifeline. Refreshed once per sweep; removed with `delIfEquals`. See [Presence](warden.md#presence).            |
+| `edge:<edgeId>:last_seen`                      | Warden       | Unix seconds                          | 30 days rolling TTL                                           | Last frame received on the lifeline. Refreshed on activity; auto-pruned after 30 days of inactivity.                                  |
+| `worker:<bootId>:<workerId>:edges`             | Warden       | Set of edge ids                       | none (deleted when the worker exits or via primary IPC sweep) | Reverse index for cleanup after a worker crash. Maintained with `sadd` / `srem`.                                                      |
+| `entity:tunnel:<token>`, `entity:edge:<token>` | Entity cache | Entity JSON                           | `ENTITY_CACHE_TTL`                                            | Token resolution cache, populated on read or write-through. See [Entity Schemas](entity-schemas.md#invalidation-order-write-through). |
+| `entity:miss:<token>`                          | Entity cache | `1`                                   | `NEGATIVE_CACHE_TTL` (5s)                                     | Negative cache tombstone for unknown or revoked tokens.                                                                               |
 
-Keys are namespaced by their first segment (`relayed_request`, `edge`, `worker`, `entity`), so entity-cache keys can never collide with presence keys.
+Keys are namespaced by their first segment (`edge`, `worker`, `entity`), so entity-cache keys can never collide with presence keys.
 
 ## Providers
 
@@ -89,4 +88,4 @@ If the KV store is unreachable:
 
 - Token resolution fails with `503` (never `401`), so Edges retry instead of entering their revoked state.
 - Ticket creation fails, and the runtime socket is closed with `1011 stream_error`.
-- Presence cannot be refreshed. Once `edge:<id>:worker` expires (`2 * HEARTBEAT_TIMEOUT`), other workers consider affected Edges offline (closing new runtime sessions with `1014 edge_disconnected`) until writes succeed again; the lifelines themselves stay open.
+- Presence cannot be refreshed. Once `edge:<id>:worker` expires (`2 * HEARTBEAT_TIMEOUT`), other workers consider affected Edges offline (answering new streams with `RESET edge_disconnected`) until writes succeed again; the lifelines themselves stay open.

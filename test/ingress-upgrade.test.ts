@@ -7,7 +7,6 @@ import { parseConfig } from "../src/utils/config.ts";
 import { registerHook, clearHooks } from "../src/utils/hooks.ts";
 import { registerWebSocketRoute, clearWebSocketRoutes } from "../src/http/index.ts";
 import { createWebSocketServer } from "../src/ws/index.ts";
-import { createTicket, cancelTicketTombstone } from "../src/warden/tickets.ts";
 import { kv, setKV } from "../src/kv/index.ts";
 import { getAvailablePort, createTempDir, cleanupTempDir, connectTestWs } from "./helpers.ts";
 
@@ -189,7 +188,7 @@ test("ingress upgrade: token resolution failure returns 503 Service Unavailable"
     }
 });
 
-test("ingress upgrade: cancelled ticket tombstone immediately closes with close code and reason", async () => {
+test("ingress upgrade: relay sessions need a valid edge token, other credentials are refused", async () => {
     clearHooks();
     clearWebSocketRoutes();
     const port = await getAvailablePort();
@@ -198,28 +197,15 @@ test("ingress upgrade: cancelled ticket tombstone immediately closes with close 
     const hub = await startHub(config);
 
     try {
-        const ticket = await createTicket(
-            "origin-1",
-            "lifeline-1",
-            "edge-dummy",
-            "req-1",
-            "tun-1",
-            30
-        );
-        await cancelTicketTombstone(ticket, "connect_timeout");
-
-        const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
-            headers: { Authorization: ticket },
+        const relay = await makeUpgradeRequest(port, "/", {
+            Authorization: "edg_unknown",
+            "x-relay-worker": "1:1",
         });
+        assert.equal(relay.statusCode, 401);
 
-        const closeResult = await new Promise<{ code: number; reason: string }>((resolve) => {
-            ws.on("close", (code, reasonBuf) => {
-                resolve({ code, reason: reasonBuf.toString() });
-            });
-        });
-
-        assert.equal(closeResult.code, 1014);
-        assert.equal(closeResult.reason, "connect_timeout");
+        // no more per-connection relay tickets
+        const ticket = await makeUpgradeRequest(port, "/", { Authorization: "tmp_anything" });
+        assert.equal(ticket.statusCode, 401);
     } finally {
         await hub.close();
         cleanupTempDir(tempDir);

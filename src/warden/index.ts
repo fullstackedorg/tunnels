@@ -1,37 +1,33 @@
 import type { Duplex } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import type { IncomingMessageWithDeny } from "../http/deny.ts";
-import type { Tunnel } from "../entities/schema.ts";
-import { isReason, type Reason } from "../constants.ts";
+import type { Edge, Tunnel } from "../entities/schema.ts";
+import { isReason, MAX_STREAMS_PER_RELAY, RELAY_WORKER_HEADER, type Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
 import { kv } from "../kv/index.ts";
-import { DEFAULT_CONNECT_TIMEOUT } from "../constants.ts";
-import { createTicket, cancelTicketTombstone } from "./tickets.ts";
-import {
-    isLifelineSaturated,
-    sendConnectTunnel,
-    sendCancelTunnel,
-    deletePendingOrder,
-    getPendingOrder,
-} from "./orders.ts";
+import { runGatingHook } from "../utils/hooks.ts";
+import { createWebSocketServer } from "../ws/index.ts";
+import { setSeverEdgeListener } from "../tunnels/registry.ts";
 import {
     getLocalLifeline,
-    isEdgeOnline,
-    wardenLifeline,
+    sendOpenRelay,
     closeLifelineLocally,
     closeAllLifelines,
-    cancelLocalPendingOrders,
     setClusterIpcSender as setLifelineClusterIpc,
-    setFailRelayedRequestFn,
     setPresenceHeartbeatTimeout,
 } from "./lifeline.ts";
 import {
-    parkRelayedRequest,
-    deleteParkedRelayedRequest,
-    failRelayedRequest,
-    failAllParkedRequests,
-    handleMigratedSocket,
-    setMigrationIpcSender,
-} from "./migration.ts";
+    closeRelays,
+    configureRelays,
+    liveRelays,
+    pickRelay,
+    registerRelay,
+    relayRequestFailed,
+    requestRelay,
+    stopRelays,
+    waitForRelay,
+} from "./relays.ts";
+import type { RelayStreamOpen } from "./types.ts";
 
 export {
     isEdgeOnline,
@@ -40,257 +36,197 @@ export {
     closeLifeline,
     setWardenBootId,
 } from "./lifeline.ts";
-export { handleMigratedSocket, wardenRelayedSocket } from "./migration.ts";
 
-setFailRelayedRequestFn(failRelayedRequest);
+export { RELAY_WORKER_HEADER } from "../constants.ts";
 
 let clusterIpcSender: ((msg: any, handle?: any) => void) | null = null;
-let connectTimeoutSec = DEFAULT_CONNECT_TIMEOUT;
 
 /** Applies the Hub settings the Warden depends on. */
-export function configureWarden(options: { connectTimeout: number; heartbeatTimeout: number }) {
-    connectTimeoutSec = options.connectTimeout;
+export function configureWarden(options: { heartbeatTimeout: number }) {
     setPresenceHeartbeatTimeout(options.heartbeatTimeout);
+    configureRelays({ request: routeRelayRequest, keepWarm: (id) => !!getLocalLifeline(id) });
+    setSeverEdgeListener((edgeId, reason) => closeRelays(edgeId, reason));
 }
 
-/** Hub shutdown: cancel orders on local lifelines, fail parked requests, close lifelines. */
+/** Hub shutdown: close lifelines (streams waiting for a relay session fail). */
 export async function shutdownWarden(reason: Reason = "hub_shutdown"): Promise<void> {
-    cancelLocalPendingOrders(reason);
-    failAllParkedRequests(reason);
     await closeAllLifelines(reason);
 }
 
-function kvFailure(err: unknown): Error {
-    const wrapped: any = new Error(`KV unavailable during relayed setup: ${(err as any)?.message}`);
-    wrapped.reason = "stream_error";
-    return wrapped;
+/** Hub shutdown, once runtime sessions drained: close every relay session. */
+export function closeAllRelays(reason: Reason = "hub_shutdown"): void {
+    closeRelays(null, reason);
+    stopRelays();
 }
 
 export function setWardenClusterIpcSender(sender: ((msg: any, handle?: any) => void) | null): void {
     clusterIpcSender = sender;
     setLifelineClusterIpc(sender);
-    setMigrationIpcSender(sender);
 }
 
-export async function acquireRelayedStream(
+// Asks the Edge for a relay session to this worker, through the lifeline worker if not here.
+function routeRelayRequest(edgeId: string): void {
+    const worker = logger.getWorkerIdentity();
+    if (sendOpenRelay(edgeId, worker)) return;
+    if (!clusterIpcSender) {
+        relayRequestFailed(edgeId, "edge_disconnected");
+        return;
+    }
+    kv.get<string>(`edge:${edgeId}:worker`).then(
+        (lifelineWorker) => {
+            if (!lifelineWorker || lifelineWorker === worker) {
+                relayRequestFailed(edgeId, "edge_disconnected");
+            } else {
+                clusterIpcSender?.({
+                    type: "relay_request",
+                    target: lifelineWorker,
+                    edgeId,
+                    worker,
+                });
+            }
+        },
+        () => relayRequestFailed(edgeId, "stream_error")
+    );
+}
+
+function reasonError(reason: Reason): Error {
+    const err: any = new Error(`Relayed stream failed: ${reason}`);
+    err.reason = reason;
+    return err;
+}
+
+/**
+ * A stream to the tunnel's target through its Edge: opened on one of the Edge's relay sessions
+ * (waiting for one when there is none yet), resolved once the Edge dialed the target. Fails with
+ * the Edge's reason, `connect_timeout` at the deadline, or the abort reason (the runtime's stream
+ * ended first), which is also sent to the Edge so it drops the dial.
+ */
+export async function openRelayedStream(
     tunnel: Tunnel,
     req: IncomingMessageWithDeny,
     deadline: number,
     signal?: AbortSignal
 ): Promise<Duplex> {
-    if (!tunnel.edgeId) {
-        throw new Error("Cannot acquire relayed stream for direct tunnel");
-    }
-
-    const currentWorker = logger.getWorkerIdentity();
-    let lifelineWorker: string | null;
-    try {
-        lifelineWorker = await kv.get<string>(`edge:${tunnel.edgeId}:worker`);
-    } catch (err) {
-        throw kvFailure(err);
-    }
-    if (!lifelineWorker) {
-        const err: any = new Error("Edge is offline");
-        err.reason = "edge_disconnected";
-        throw err;
-    }
-
-    let ticket: string;
-    try {
-        ticket = await createTicket(
-            currentWorker,
-            lifelineWorker,
-            tunnel.edgeId,
-            req.id,
-            tunnel.id,
-            connectTimeoutSec + 2
-        );
-    } catch (err) {
-        throw kvFailure(err);
-    }
-
-    return new Promise<Duplex>((resolve, reject) => {
-        let isSettled = false;
-
-        const notifyCancel = (reason: Reason) => {
-            if (lifelineWorker === currentWorker) {
-                const ws = getLocalLifeline(tunnel.edgeId!);
-                if (ws) sendCancelTunnel(ws, ticket, req.id, reason);
-            } else if (clusterIpcSender) {
-                clusterIpcSender({
-                    type: "relayed_tunnel_cancel",
-                    target: lifelineWorker,
-                    ticket,
-                    reason,
-                });
-            }
-        };
-
-        const abandon = (reason: Reason) => {
-            if (isSettled) return;
-            safeReject(reason);
-            notifyCancel(reason);
-            cancelTicketTombstone(ticket, reason).catch((err) => {
-                logger.warn("Warden", `Failed to write ticket tombstone: ${err?.message}`);
-            });
-        };
-        // the runtime's stream ended (or its session closed) before the Edge answered
-        const onRuntimeClose = () =>
-            abandon(isReason(signal?.reason) ? signal.reason : "client_aborted");
-
-        const safeReject = (reason: Reason) => {
-            if (isSettled) return;
-            isSettled = true;
-            if (deadlineTimer) clearTimeout(deadlineTimer);
-            signal?.removeEventListener("abort", onRuntimeClose);
-            deleteParkedRelayedRequest(ticket);
-            const err: any = new Error(`Relayed stream failed: ${reason}`);
-            err.reason = reason;
-            reject(err);
-        };
-
-        const safeResolve = (stream: Duplex) => {
-            if (isSettled) return;
-            isSettled = true;
-            if (deadlineTimer) clearTimeout(deadlineTimer);
-            signal?.removeEventListener("abort", onRuntimeClose);
-            resolve(stream);
-        };
-
-        const msRemaining = Math.max(1, deadline - Date.now());
-        const deadlineTimer = setTimeout(() => abandon("connect_timeout"), msRemaining);
-        deadlineTimer.unref();
-
-        signal?.addEventListener("abort", onRuntimeClose, { once: true });
-        if (signal?.aborted) {
-            // ended while the ticket was created: no connect order went out
-            safeReject(isReason(signal.reason) ? signal.reason : "client_aborted");
-            return;
+    const edgeId = tunnel.edgeId!;
+    let relay = pickRelay(edgeId);
+    if (!relay) {
+        requestRelay(edgeId);
+        try {
+            await waitForRelay(edgeId, deadline, signal);
+        } catch (reason) {
+            throw reasonError(isReason(reason) ? reason : "stream_error");
         }
+        relay = pickRelay(edgeId);
+        if (!relay) throw reasonError("relay_dial_failed");
+    }
+    if (relay.session.size >= MAX_STREAMS_PER_RELAY) throw reasonError("edge_saturated");
+    const connectTimeoutMs = deadline - Date.now();
+    if (connectTimeoutMs <= 0) throw reasonError("connect_timeout");
 
-        parkRelayedRequest(ticket, {
-            resolve: safeResolve,
-            reject: safeReject,
-            lifelineWorker,
-            reqId: req.id,
-            deadline,
-            timer: deadlineTimer,
-        });
-
-        const edgeTunnel = {
+    const open: RelayStreamOpen = {
+        reqId: req.id,
+        tunnel: {
             id: tunnel.id,
             name: tunnel.name,
             internalHost: tunnel.internalHost,
             internalPort: tunnel.internalPort,
             metadata: tunnel.metadata || {},
-        };
-        const client = {
-            ip: req.clientIp,
-            correlationId: req.correlationId,
-        };
+        },
+        client: { ip: req.clientIp, correlationId: req.correlationId },
+        connectTimeoutMs,
+    };
+    const session = relay.session;
+    const { stream, ready } = session.startStream(JSON.stringify(open));
 
-        if (lifelineWorker === currentWorker) {
-            const ws = getLocalLifeline(tunnel.edgeId!);
-            if (!ws || ws.readyState !== ws.OPEN) {
-                safeReject("edge_disconnected");
-                return;
+    await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+        };
+        const fail = (reason: Reason) => {
+            cleanup();
+            if (!stream.destroyed) {
+                stream.closeReason = reason;
+                stream.destroy();
             }
-            if (isLifelineSaturated(tunnel.edgeId!, ws)) {
-                safeReject("edge_saturated");
-                return;
+            reject(reasonError(reason));
+        };
+        const onAbort = () => fail(isReason(signal?.reason) ? signal.reason : "client_aborted");
+        const timer = setTimeout(() => fail("connect_timeout"), connectTimeoutMs);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        ready.then(
+            () => {
+                cleanup();
+                resolve();
+            },
+            (err) => {
+                const peer = err?.reason;
+                if (isReason(peer) && peer !== "client_close") fail(peer);
+                else fail(session.open ? "stream_error" : "edge_disconnected");
             }
-            const sent = sendConnectTunnel(
-                ws,
-                ticket,
-                req.id,
-                edgeTunnel,
-                client,
-                deadline,
-                currentWorker,
-                tunnel.edgeId!
-            );
-            if (!sent) {
-                safeReject("connect_timeout");
-            }
-        } else if (clusterIpcSender) {
-            clusterIpcSender({
-                type: "relayed_tunnel_request",
-                target: lifelineWorker,
-                ticket,
-                reqId: req.id,
-                edgeId: tunnel.edgeId!,
-                tunnel: edgeTunnel,
-                client,
-                deadline,
-                originWorker: currentWorker,
-            });
-        }
+        );
+        if (signal?.aborted) onAbort();
     });
+    return stream;
+}
+
+function acceptRelaySession(edgeId: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
+    createWebSocketServer().handleUpgrade(req, socket, head, (ws) => {
+        registerRelay(edgeId, ws);
+        logger.info("Warden", `Relay session of edge ${edgeId} up (${liveRelays(edgeId).length})`);
+    });
+}
+
+/** A relay session upgrade (edge token + RELAY_WORKER_HEADER): kept here or moved to its worker. */
+export async function wardenRelaySession(
+    req: IncomingMessageWithDeny,
+    socket: Duplex,
+    head: Buffer,
+    edge: Edge
+): Promise<void> {
+    const passed = await runGatingHook("lifeline_connect", req, edge);
+    if (!passed || req.denied) return;
+
+    const target = req.headers[RELAY_WORKER_HEADER];
+    if (typeof target === "string" && target !== logger.getWorkerIdentity() && clusterIpcSender) {
+        clusterIpcSender(
+            { type: "relay_session_socket", target, edgeId: edge.id, head, headers: req.headers },
+            socket
+        );
+        return;
+    }
+    acceptRelaySession(edge.id, req, socket, head);
 }
 
 export function handleWardenIpc(msg: any, handle?: any): void {
     const currentWorker = logger.getWorkerIdentity();
     if (!msg || typeof msg !== "object") return;
+    if (msg.target !== currentWorker) {
+        // a socket for a worker identity that is not this one (stale): nobody else will take it
+        if (handle && typeof handle.destroy === "function") handle.destroy();
+        return;
+    }
 
-    if (msg.type === "relayed_tunnel_request" && msg.target === currentWorker) {
-        const ws = getLocalLifeline(msg.edgeId);
-        if (!ws || ws.readyState !== ws.OPEN) {
-            if (clusterIpcSender) {
-                clusterIpcSender({
-                    type: "relayed_tunnel_failed",
-                    target: msg.originWorker,
-                    ticket: msg.ticket,
-                    reason: "edge_disconnected",
-                });
-            }
-            return;
-        }
-        if (isLifelineSaturated(msg.edgeId, ws)) {
-            if (clusterIpcSender) {
-                clusterIpcSender({
-                    type: "relayed_tunnel_failed",
-                    target: msg.originWorker,
-                    ticket: msg.ticket,
-                    reason: "edge_saturated",
-                });
-            }
-            return;
-        }
-        const sent = sendConnectTunnel(
-            ws,
-            msg.ticket,
-            msg.reqId,
-            msg.tunnel,
-            msg.client,
-            msg.deadline,
-            msg.originWorker,
-            msg.edgeId
-        );
-        if (!sent && clusterIpcSender) {
-            clusterIpcSender({
-                type: "relayed_tunnel_failed",
-                target: msg.originWorker,
-                ticket: msg.ticket,
-                reason: "connect_timeout",
+    if (msg.type === "relay_request") {
+        if (!sendOpenRelay(msg.edgeId, msg.worker)) {
+            clusterIpcSender?.({
+                type: "relay_failed",
+                target: msg.worker,
+                edgeId: msg.edgeId,
+                reason: "edge_disconnected",
             });
         }
-    } else if (msg.type === "relayed_tunnel_cancel" && msg.target === currentWorker) {
-        const pending = getPendingOrder(msg.ticket);
-        const ws = pending ? getLocalLifeline(pending.edgeId) : undefined;
-        if (pending && ws) {
-            sendCancelTunnel(ws, msg.ticket, pending.reqId, msg.reason);
-        } else {
-            deletePendingOrder(msg.ticket);
-        }
-    } else if (msg.type === "relayed_tunnel_failed" && msg.target === currentWorker) {
-        failRelayedRequest(msg.ticket, msg.reason);
-    } else if (msg.type === "relayed_tunnel_handoff" && msg.target === currentWorker) {
-        deletePendingOrder(msg.ticket);
-    } else if (msg.type === "relayed_tunnel_socket" && msg.target === currentWorker) {
-        if (handle) {
-            handleMigratedSocket(msg.ticket, Buffer.from(msg.head), msg.headers, handle);
-        }
-    } else if (msg.type === "close_lifeline" && msg.target === currentWorker) {
+    } else if (msg.type === "relay_failed") {
+        relayRequestFailed(msg.edgeId, isReason(msg.reason) ? msg.reason : "relay_dial_failed");
+    } else if (msg.type === "relay_session_socket" && handle) {
+        const reqAdapter = { method: "GET", url: "/", headers: msg.headers, socket: handle };
+        acceptRelaySession(
+            msg.edgeId,
+            reqAdapter as unknown as IncomingMessage,
+            handle,
+            Buffer.from(msg.head)
+        );
+    } else if (msg.type === "close_lifeline") {
         closeLifelineLocally(msg.edgeId, msg.reason);
     }
 }

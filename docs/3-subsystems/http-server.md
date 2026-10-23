@@ -19,8 +19,9 @@ flowchart TD
         Path -->|"Registered WebSocket route"| Custom["Custom route handler"]
         Path -->|"Other non-root"| R404["404 Not Found"]
         Path -->|"'/'"| Prefix{"Authorization prefix"}
-        Prefix -->|"tmp_"| Relayed["Warden: relayed socket"]
-        Prefix -->|"edg_"| Lifeline["Warden: lifeline\n(lifeline_connect hook)"]
+        Prefix -->|"edg_"| EdgeKind{"x-relay-worker?"}
+        EdgeKind -->|"No"| Lifeline["Warden: lifeline\n(lifeline_connect hook)"]
+        EdgeKind -->|"Yes"| Relayed["Warden: relay session\n(lifeline_connect hook)"]
         Prefix -->|"tun_"| Tunnel["Tunnel Handler\n(tunnel_request hook)"]
         Prefix -->|"missing / unknown"| R401["401 Unauthorized"]
     end
@@ -48,10 +49,10 @@ One TCP port (`PORT`, default 3000) serves both the REST API and all WebSocket u
     - any other non-root path is rejected with `404`;
     - the root path `/` is classified by the `Authorization` prefix.
 5. Classify by prefix (no storage access needed for the classification itself):
-    - `tmp_`: relayed socket, handled by the [Warden](warden.md#2-relayed-sessions). Claimed via KV ticket `getdel`; if cancelled tombstone, closed with cancellation reason.
-    - `edg_`: lifeline. The edge is resolved, `lifeline_connect` runs, then the [Warden](warden.md#1-lifelines) accepts it.
-    - `tun_`: runtime socket. The tunnel is resolved, `tunnel_request` runs, and the upgrade is accepted with `101`. If the target Edge is offline it is immediately closed with `1014 edge_disconnected`; a saturated Edge closes the session with `1013 edge_saturated` (see [Saturation](../1-concepts/protocol-spec.md#e-saturation)).
-    - missing or unknown prefix, or a token that does not resolve: `401 Unauthorized`. If resolution (including the ticket claim) fails because storage or KV is unavailable: `503 Service Unavailable`. Any other unexpected error while handling an upgrade: `500 Internal Server Error`.
+    - `edg_` with an `x-relay-worker` header: relay session. The edge is resolved, `lifeline_connect` runs, then the [Warden](warden.md#accepting-a-session) accepts it, on the worker the header names.
+    - `edg_` without it: lifeline. The edge is resolved, `lifeline_connect` runs, then the [Warden](warden.md#1-lifelines) accepts it.
+    - `tun_`: tunnel session. The tunnel is resolved, `tunnel_request` runs once, and the upgrade is accepted with `101`; every driver connection is then a stream on it. A stream for an offline Edge is answered `RESET edge_disconnected`; a stream for a saturated Edge `RESET edge_saturated` (see [Saturation](../1-concepts/protocol-spec.md#e-saturation)).
+    - missing or unknown prefix, or a token that does not resolve: `401 Unauthorized`. If resolution fails because storage or KV is unavailable: `503 Service Unavailable`. Any other unexpected error while handling an upgrade: `500 Internal Server Error`.
 
 > [!NOTE]
 > Standard browser WebSockets cannot send custom request headers per the [WHATWG WebSocket API specification](https://websockets.spec.whatwg.org/), so handshakes lacking an `Authorization` header are rejected with `401 Unauthorized`. In browser workloads running on the **FullStacked runtime**, `window.WebSocket` is overridden by `WebSocketCore`. Registering a tunnel via `const tunnelName = await tunnel.register({ host, authorization, name? })` returns the generated string (or custom `name`); opening `new window.WebSocket("ws://" + tunnelName)` then routes through the tunnel using the registered `authorization` credentials.

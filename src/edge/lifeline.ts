@@ -1,10 +1,10 @@
-import fs from "node:fs";
 import WebSocket from "ws";
 import type { AppConfig } from "../utils/config.ts";
 import type { Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
 import { registerHeartbeat } from "../ws/heartbeat.ts";
-import { processEdgeOrder, cancelEdgeOrder, drainAndCloseEdgeSessions } from "./orders.ts";
+import { drainAndCloseEdgeSessions } from "./streams.ts";
+import { closeRelaySessions, openRelaySession, readEdgeToken } from "./relay.ts";
 
 export interface EdgeLifelineOptions {
     config: AppConfig;
@@ -27,18 +27,6 @@ export class EdgeLifeline {
         this.config = options.config;
         this.onOrder = options.onOrder;
         this.onRevoked = options.onRevoked;
-    }
-
-    private getToken(): string | undefined {
-        if (this.config.tokenFile && fs.existsSync(this.config.tokenFile)) {
-            try {
-                const content = fs.readFileSync(this.config.tokenFile, "utf-8").trim();
-                if (content) return content;
-            } catch (err: any) {
-                logger.warn("Edge", `Failed to read token file: ${err?.message}`);
-            }
-        }
-        return this.config.token;
     }
 
     private getBackoffDelay(): number {
@@ -65,7 +53,9 @@ export class EdgeLifeline {
         if (this.onRevoked) {
             this.onRevoked(drainMs, "token_rolled");
         } else {
-            drainAndCloseEdgeSessions(drainMs, "token_rolled").catch(() => {});
+            drainAndCloseEdgeSessions(drainMs, "token_rolled")
+                .catch(() => {})
+                .finally(() => closeRelaySessions("token_rolled"));
         }
         this.scheduleReconnect(this.config.revokedPollInterval * 1000);
     }
@@ -78,7 +68,7 @@ export class EdgeLifeline {
     private connect(): void {
         if (!this.isRunning) return;
 
-        const token = this.getToken();
+        const token = readEdgeToken(this.config);
         if (!token) {
             logger.error("Edge", "No edge token available to connect");
             this.scheduleReconnect(this.config.reconnectInterval * 1000);
@@ -129,23 +119,10 @@ export class EdgeLifeline {
 
                 if (this.onOrder) {
                     this.onOrder(order);
-                } else if (order.type === "connect_tunnel") {
-                    processEdgeOrder(order, hubUrl, {
-                        onFailedBeforeHandoff: (ticket, reqId, reason) => {
-                            if (ws.readyState === ws.OPEN) {
-                                ws.send(
-                                    JSON.stringify({
-                                        type: "connect_tunnel_failed",
-                                        ticket,
-                                        reqId,
-                                        reason,
-                                    })
-                                );
-                            }
-                        },
+                } else if (order.type === "open_relay" && typeof order.worker === "string") {
+                    openRelaySession(this.config, order.worker).then((ok) => {
+                        if (!ok) this.sendRelayFailed(order.worker);
                     });
-                } else if (order.type === "cancel_tunnel") {
-                    cancelEdgeOrder(order.ticket, order.reason || "client_aborted");
                 }
             } catch (err: any) {
                 logger.warn("Edge", `Failed to parse lifeline message: ${err?.message}`);
@@ -191,12 +168,11 @@ export class EdgeLifeline {
         });
     }
 
-    sendFailedBeforeHandoff(ticket: string, reqId: string, reason: string): void {
+    /** Tells the Hub the relay session `worker` asked for could not be dialed. */
+    sendRelayFailed(worker: string): void {
         if (this.ws && this.ws.readyState === this.ws.OPEN) {
             try {
-                this.ws.send(
-                    JSON.stringify({ type: "connect_tunnel_failed", ticket, reqId, reason })
-                );
+                this.ws.send(JSON.stringify({ type: "open_relay_failed", worker }));
             } catch {}
         }
     }
@@ -213,5 +189,6 @@ export class EdgeLifeline {
             } catch {}
         }
         await drainAndCloseEdgeSessions(this.config.shutdownTimeout * 1000, "edge_shutdown");
+        closeRelaySessions("edge_shutdown");
     }
 }

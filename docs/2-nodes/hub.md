@@ -8,12 +8,12 @@ flowchart TD
     Router -->|"Upgrade"| Classify{"Token prefix"}
     Classify -->|"tun_"| Tunnel["Tunnel Handler"]
     Classify -->|"edg_"| Lifeline["Warden: Lifeline"]
-    Classify -->|"tmp_"| Relayed["Warden: Relayed Socket"]
+    Classify -->|"edg_ + x-relay-worker"| Relayed["Warden: Relay Session"]
     Tunnel -->|"Direct"| Target[("Target")]
-    Tunnel -->|"Relayed"| Relayed
+    Tunnel -->|"Relayed (streams)"| Relayed
+    Lifeline -->|"open_relay"| Relayed
     API --> State[("Storage + KV")]
     Lifeline --> State
-    Relayed --> State
 ```
 
 ## Role
@@ -136,9 +136,9 @@ See the [REST API Reference](../3-subsystems/rest-api-router.md). Tokens are alw
 On `SIGINT` / `SIGTERM`:
 
 1. **Stop ingress**: stop accepting connections and upgrades.
-2. **Fail pending setups**: sessions that have not reached handoff close with `1001 hub_shutdown`; their Edges receive `cancel_tunnel`.
-3. **Close lifelines**: every lifeline is closed with `1001 hub_shutdown` and `lifeline_disconnect` fires. Edges reconnect with backoff.
-4. **Drain sessions**: established sessions may continue for up to `SHUTDOWN_TIMEOUT` (default 30s); any still open are then closed with `1001 hub_shutdown`. `tunnel_end` fires for every session.
+2. **Close lifelines**: every lifeline is closed with `1001 hub_shutdown` and `lifeline_disconnect` fires; streams still waiting for a relay session fail with `hub_shutdown`. Edges reconnect with backoff.
+3. **Drain sessions**: established sessions may continue for up to `SHUTDOWN_TIMEOUT` (default 30s); any still open are then closed with `1001 hub_shutdown`. `tunnel_end` fires for every stream.
+4. **Close relay sessions**: once the runtime sessions they serve are gone, every relay session is closed with `1001 hub_shutdown`.
 5. **Close providers**: `storage.close()` (flushes the filesystem store or ends the PostgreSQL pool) and `kv.close()`.
 6. **Exit**: code `0` if every session ended on its own, `1` if any had to be force-closed.
 

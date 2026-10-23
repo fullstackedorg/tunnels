@@ -8,7 +8,6 @@ import { initKV } from "../kv/index.ts";
 import { setHeartbeatConfig } from "../ws/heartbeat.ts";
 import { setHookTimeout } from "../utils/hooks.ts";
 import { setTunnelConnectTimeout } from "../tunnels/index.ts";
-import { setSaturationLimits } from "../warden/orders.ts";
 import {
     configureWarden,
     setWardenBootId,
@@ -63,7 +62,6 @@ export async function startHub(config: AppConfig): Promise<HubInstance> {
     setHeartbeatConfig(config.heartbeatInterval, config.heartbeatTimeout);
     setHookTimeout(config.hookTimeout);
     setTunnelConnectTimeout(config.connectTimeout);
-    setSaturationLimits(config.maxPendingOrders, config.maxLifelineBuffer);
     configureWarden(config);
     setCacheTtl(config.entityCacheTtl, config.negativeCacheTtl);
 

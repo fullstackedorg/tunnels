@@ -75,9 +75,7 @@ test("token: generateToken and getTokenType", () => {
     assert.ok(edg.startsWith("edg_"));
     assert.strictEqual(getTokenType(edg), "edge");
 
-    const tmp = generateToken("tmp_");
-    assert.ok(tmp.startsWith("tmp_"));
-    assert.strictEqual(getTokenType(tmp), "ticket");
+    assert.strictEqual(getTokenType("tmp_relay_ticket"), "unknown");
 
     assert.strictEqual(getTokenType("unknown_123"), "unknown");
     assert.strictEqual(getTokenType(""), "unknown");

@@ -271,7 +271,7 @@ test("relayed-tunnel: edge gating hook denial returns hook_denied and error retu
     }
 });
 
-test("relayed-tunnel: cancel_tunnel order cancels in-flight dial and emits edge_tunnel_end", async () => {
+test("relayed-tunnel: a runtime that leaves mid-dial resets the Edge stream and emits edge_tunnel_end", async () => {
     clearHooks();
     const hubPort = await getAvailablePort();
     const dir = createTempDir("relayed-cancel-");
@@ -345,7 +345,7 @@ test("relayed-tunnel: cancel_tunnel order cancels in-flight dial and emits edge_
             await new Promise((r) => setTimeout(r, 20));
         }
 
-        // Wait for cancel_tunnel order to reach Edge and edge_tunnel_end to fire
+        // Wait for the RESET to reach the Edge and edge_tunnel_end to fire
         for (let i = 0; i < 50; i++) {
             if (edgeTunnelEndReason) break;
             await new Promise((r) => setTimeout(r, 50));
@@ -357,5 +357,71 @@ test("relayed-tunnel: cancel_tunnel order cancels in-flight dial and emits edge_
         if (hub) await hub.close();
         cleanupTempDir(dir);
         clearHooks();
+    }
+});
+
+test("relayed-tunnel: a runtime that leaves during the Edge's gate is dropped without dialing", async () => {
+    clearHooks();
+    const echo = await createTestEchoServer();
+    let dialed = 0;
+    echo.server.on("connection", () => dialed++);
+    const hubPort = await getAvailablePort();
+    const dir = createTempDir("relayed-gate-");
+    let hub: HubInstance | null = null;
+    let edge: EdgeInstance | null = null;
+
+    try {
+        hub = await startHub(parseConfig(["--port", String(hubPort), "--data-dir", dir]));
+        const baseUrl = `http://127.0.0.1:${hubPort}`;
+        const edgeRes = await jsonFetch(`${baseUrl}/edges`, {
+            method: "POST",
+            body: { name: "Gate Edge" },
+        });
+        edge = await startEdge(
+            parseConfig(["--hub-url", `ws://127.0.0.1:${hubPort}`, "--token", edgeRes.data.token])
+        );
+        for (let i = 0; i < 50; i++) {
+            if ((await jsonFetch(`${baseUrl}/edges/${edgeRes.data.id}`)).data?.connected) break;
+            await new Promise((r) => setTimeout(r, 50));
+        }
+        const tunnelRes = await jsonFetch(`${baseUrl}/tunnels`, {
+            method: "POST",
+            body: {
+                name: "Gate Tunnel",
+                internalHost: "127.0.0.1",
+                internalPort: echo.port,
+                edgeId: edgeRes.data.id,
+            },
+        });
+
+        const edgeHooks: string[] = [];
+        let gated!: () => void;
+        const gateEntered = new Promise<void>((r) => (gated = r));
+        registerHook("edge_tunnel_request", async () => {
+            gated();
+            await new Promise((r) => setTimeout(r, 300));
+        });
+        registerHook("edge_tunnel_start", () => {
+            edgeHooks.push("start");
+        });
+        registerHook("edge_tunnel_end", () => {
+            edgeHooks.push("end");
+        });
+
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
+            headers: { Authorization: tunnelRes.data.token },
+        });
+        await gateEntered;
+        ws.terminate();
+        await new Promise((r) => setTimeout(r, 600));
+
+        assert.deepEqual(edgeHooks, []);
+        assert.equal(dialed, 0, "the target is never dialed");
+    } finally {
+        clearHooks();
+        if (edge) await edge.stop();
+        if (hub) await hub.close();
+        await echo.close();
+        cleanupTempDir(dir);
     }
 });

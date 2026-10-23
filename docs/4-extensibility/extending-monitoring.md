@@ -157,7 +157,7 @@ registerHook("lifeline_disconnect", (_req, edge, reason) => {
 
 ## Edge Metrics
 
-The same pattern applies on the Edge with `edge_tunnel_request` (orders received and gating), `edge_tunnel_start` (active session tracking), `edge_tunnel_connected` (byte counting), and `edge_tunnel_end` (session completion and reason). See [examples/track-bandwidth-hook.ts](../../examples/track-bandwidth-hook.ts).
+The same pattern applies on the Edge with `edge_tunnel_request` (streams received and gating), `edge_tunnel_start` (active session tracking), `edge_tunnel_connected` (byte counting), and `edge_tunnel_end` (session completion and reason). See [examples/track-bandwidth-hook.ts](../../examples/track-bandwidth-hook.ts).
 
 ## Edge Presence
 

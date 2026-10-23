@@ -85,11 +85,15 @@ High-performance networking servers easily become unmaintainable when socket han
 When a subsystem approaches 250 LOC, split it into dedicated modules within a subsystem folder:
 
 - **Warden Decomposition**:
-    - `warden/lifeline.ts`: Handles lifeline upgrade, heartbeat, and presence.
-    - `warden/orders.ts`: Handles order generation (`connect_tunnel`, `cancel_tunnel`), saturation checks.
-    - `warden/tickets.ts`: Handles ticket creation, claiming (`kv.getdel`), and tombstones.
-    - `warden/migration.ts`: Handles clustered socket migration between workers via Primary IPC.
-    - `warden/index.ts`: Public `acquireRelayedStream`, `wardenLifeline`, `wardenRelayedSocket`.
+    - `warden/lifeline.ts`: Handles lifeline upgrade, heartbeat, presence, and `open_relay` / `open_relay_failed`.
+    - `warden/relays.ts`: Handles the relay session pool per Edge: placement, spare requests, clog detection, idle closing, waiting for a session.
+    - `warden/types.ts`: Lifeline orders, the `RelayStreamOpen` payload, and Warden IPC messages.
+    - `warden/index.ts`: Public `openRelayedStream`, `wardenLifeline`, `wardenRelaySession`; relay request routing and relay session socket moves via Primary IPC.
+- **Edge Decomposition**:
+    - `edge/lifeline.ts`: Lifeline connection, reconnect backoff, revoked state.
+    - `edge/relay.ts`: Relay session dials (`open_relay`).
+    - `edge/streams.ts`: Serving each stream: gate, target dial, splice.
+    - `edge/cluster.ts`: Multi-worker Primary and workers.
 - **Storage Decomposition**:
     - `storage/interface.ts`: `StorageProvider`, `Item`, `QueryContext`, `WhereCondition`.
     - `storage/filesystem.ts`: Filesystem provider (coalescing, atomic rename, shared lock mode).
@@ -112,7 +116,7 @@ Consistency in file names allows intuitive codebase exploration and prevents cas
 1. **Directories**: Lowercase kebab-case, short subsystem names:
     - `docs/1-concepts/`, `src/tunnels/`, `src/kv/`, `src/warden/`.
 2. **Source Files**: Lowercase kebab-case:
-    - `ws-stream.ts`, `track-bandwidth-hook.ts`, `check-loc.ts`.
+    - `config-notices.ts`, `track-bandwidth-hook.ts`, `check-loc.ts`.
 3. **Well-Known Exceptions**:
     - `main.ts`: Executable entry points (`src/main.ts`).
     - `index.ts`: Barrel export files for a directory.

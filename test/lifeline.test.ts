@@ -7,7 +7,6 @@ import { logger } from "../src/utils/logger.ts";
 import { registerHook, clearHooks } from "../src/utils/hooks.ts";
 import { handleWardenIpc, setWardenClusterIpcSender } from "../src/warden/index.ts";
 import { getLocalLifeline } from "../src/warden/lifeline.ts";
-import { recordPendingOrder } from "../src/warden/orders.ts";
 import {
     SpyKV,
     connectRawLifeline,
@@ -39,54 +38,50 @@ test("lifeline: a superseded lifeline never unregisters its replacement on the s
         const res = await jsonFetch(`${h.baseUrl}/edges/${edge.id}`);
         assert.equal(res.data.connected, true);
 
-        // Orders still reach the replacement lifeline.
-        const tunnel = await createTunnel(h.baseUrl, {
-            internalHost: "127.0.0.1",
-            internalPort: 9,
-            edgeId: edge.id,
-        });
-        const runtime = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
-            headers: { Authorization: tunnel.token },
-        });
-        await waitFor(() => second.orders.some((o) => o.type === "connect_tunnel"));
-        runtime.terminate();
+        // Orders reach the replacement lifeline: it is asked for a warm relay session too.
+        await waitFor(() => second.orders.some((o) => o.type === "open_relay"));
+        assert.deepEqual(
+            second.orders.find((o) => o.type === "open_relay"),
+            { type: "open_relay", worker: logger.getWorkerIdentity() }
+        );
         second.ws.close();
     } finally {
         await h.close();
     }
 });
 
-test("lifeline: relayed_tunnel_cancel from another worker sends cancel_tunnel on the lifeline", async () => {
+test("lifeline: relay requests from other workers reach the Edge, its failures go back", async () => {
     clearHooks();
     const h = await startTestHub();
+    const sent: any[] = [];
     try {
         const edge = await createEdge(h.baseUrl);
         const lifeline = await connectRawLifeline(h.port, edge.token);
         await waitFor(() => Boolean(getLocalLifeline(edge.id)));
+        setWardenClusterIpcSender((msg) => sent.push(msg));
 
-        recordPendingOrder("tmp_remote", {
-            originWorker: "other:2",
-            reqId: "req-1",
-            edgeId: edge.id,
-            expiresAt: Date.now() + 10_000,
-        });
         handleWardenIpc({
-            type: "relayed_tunnel_cancel",
+            type: "relay_request",
             target: logger.getWorkerIdentity(),
-            ticket: "tmp_remote",
-            reason: "client_aborted",
+            edgeId: edge.id,
+            worker: "other:2",
         });
+        await waitFor(() => lifeline.orders.some((o) => o.worker === "other:2"), 1000);
+        assert.deepEqual(lifeline.orders.at(-1), { type: "open_relay", worker: "other:2" });
 
-        await waitFor(() => lifeline.orders.some((o) => o.type === "cancel_tunnel"), 1000);
-        const cancel = lifeline.orders.find((o) => o.type === "cancel_tunnel");
-        assert.deepEqual(cancel, {
-            type: "cancel_tunnel",
-            reqId: "req-1",
-            ticket: "tmp_remote",
-            reason: "client_aborted",
-        });
+        lifeline.ws.send(JSON.stringify({ type: "open_relay_failed", worker: "other:2" }));
+        await waitFor(() => sent.some((m) => m.type === "relay_failed"), 1000);
+        assert.deepEqual(
+            sent.find((m) => m.type === "relay_failed"),
+            {
+                type: "relay_failed",
+                target: "other:2",
+                edgeId: edge.id,
+            }
+        );
         lifeline.ws.close();
     } finally {
+        setWardenClusterIpcSender(null);
         await h.close();
     }
 });
@@ -114,9 +109,9 @@ test("lifeline: deleting an Edge closes its lifeline on the worker that holds it
     }
 });
 
-test("lifeline: ticket and presence TTLs follow CONNECT_TIMEOUT and HEARTBEAT_TIMEOUT", async () => {
+test("lifeline: presence TTL follows HEARTBEAT_TIMEOUT", async () => {
     clearHooks();
-    const h = await startTestHub(["--connect-timeout", "3", "--heartbeat-timeout", "7"]);
+    const h = await startTestHub(["--heartbeat-timeout", "7"]);
     const spy = new SpyKV(initKV(parseConfig([])));
     setKV(spy);
     try {
@@ -124,32 +119,15 @@ test("lifeline: ticket and presence TTLs follow CONNECT_TIMEOUT and HEARTBEAT_TI
         const lifeline = await connectRawLifeline(h.port, edge.token);
         await waitFor(() => spy.sets.some((s) => s.key === `edge:${edge.id}:worker`));
         assert.equal(spy.sets.find((s) => s.key === `edge:${edge.id}:worker`)!.ttl, 14);
-
-        const tunnel = await createTunnel(h.baseUrl, {
-            internalHost: "127.0.0.1",
-            internalPort: 9,
-            edgeId: edge.id,
-        });
-        const runtime = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
-            headers: { Authorization: tunnel.token },
-        });
-        await waitFor(() => lifeline.orders.some((o) => o.type === "connect_tunnel"));
-        const ticketSet = spy.sets.find((s) => s.key.startsWith("relayed_request:"));
-        assert.equal(ticketSet!.ttl, 5);
-        assert.ok(lifeline.orders[0].connectTimeoutMs <= 3000);
-
-        runtime.terminate();
         lifeline.ws.close();
     } finally {
         await h.close();
     }
 });
 
-test("lifeline: KV unavailable during relayed setup closes the runtime with 1011 stream_error", async () => {
+test("lifeline: a relay session the Edge cannot dial fails the waiting stream with relay_dial_failed", async () => {
     clearHooks();
     const h = await startTestHub();
-    const spy = new SpyKV(initKV(parseConfig([])));
-    setKV(spy);
     try {
         const ends: string[] = [];
         registerHook("tunnel_end", (_req, _t, reason) => {
@@ -157,21 +135,26 @@ test("lifeline: KV unavailable during relayed setup closes the runtime with 1011
         });
         const edge = await createEdge(h.baseUrl);
         const lifeline = await connectRawLifeline(h.port, edge.token);
-        await waitFor(() => Boolean(getLocalLifeline(edge.id)));
+        // an Edge whose relay dials all fail
+        const answer = (data: Buffer) => {
+            const order = JSON.parse(data.toString("utf-8"));
+            if (order.type !== "open_relay") return;
+            lifeline.ws.send(JSON.stringify({ type: "open_relay_failed", worker: order.worker }));
+        };
+        lifeline.orders.forEach((o) => answer(Buffer.from(JSON.stringify(o))));
+        lifeline.ws.on("message", answer);
         const tunnel = await createTunnel(h.baseUrl, {
             internalHost: "127.0.0.1",
             internalPort: 9,
             edgeId: edge.id,
         });
 
-        spy.failKey = (key) => key.startsWith("edge:") || key.startsWith("relayed_request:");
         const runtime = tunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
-        assert.deepEqual(await waitForClose(runtime), { code: 1011, reason: "stream_error" });
+        assert.deepEqual(await waitForClose(runtime), { code: 1014, reason: "relay_dial_failed" });
         await sleep(100);
-        assert.deepEqual(ends, ["stream_error"]);
-        spy.failKey = () => false;
+        assert.deepEqual(ends, ["relay_dial_failed"]);
         lifeline.ws.close();
     } finally {
         clearHooks();
