@@ -13,6 +13,7 @@ import {
     connectTestWs,
     createTestEchoServer,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 
 test("api-extended: rest_access hook gating denial and error", async () => {
     clearHooks();
@@ -221,7 +222,7 @@ test("api-extended: tunnel update modifying internalPort severs sessions with 10
         assert.equal(createRes.status, 201);
         const tunnel = createRes.data;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: tunnel.token },
         });
 

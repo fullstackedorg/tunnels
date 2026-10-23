@@ -27,6 +27,7 @@ export const CLOSE_CODES = {
     heartbeat_timeout: 1011,
 
     edge_saturated: 1013,
+    stream_limit: 1013,
 
     target_unreachable: 1014,
     connect_timeout: 1014,
@@ -43,6 +44,7 @@ export type Reason =
     | "relay_dial_failed"
     | "edge_disconnected"
     | "edge_saturated"
+    | "stream_limit"
     | "target_worker_dead"
     | "hook_denied"
     | "hook_error"
@@ -65,6 +67,7 @@ const REASONS = new Set<string>([
     "relay_dial_failed",
     "edge_disconnected",
     "edge_saturated",
+    "stream_limit",
     "target_worker_dead",
     "hook_denied",
     "hook_error",

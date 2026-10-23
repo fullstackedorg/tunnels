@@ -54,7 +54,7 @@ async function ensureRuntimeBuilt() {
     const built = () => (fs.existsSync(BUILD_STAMP) ? fs.readFileSync(BUILD_STAMP, "utf-8") : "");
     if (!state || built() === state) return;
     fs.mkdirSync(path.dirname(BUILD_LOCK), { recursive: true });
-    for (const deadline = Date.now() + 10 * 60_000; ; ) {
+    for (const deadline = Date.now() + 10 * 60_000; ;) {
         try {
             fs.mkdirSync(BUILD_LOCK);
             break;
@@ -67,7 +67,9 @@ async function ensureRuntimeBuilt() {
     }
     try {
         if (built() === state) return;
-        console.log(`[integration] rebuilding integration/fullstacked (core + node binding) for ${state.slice(0, 12)}`);
+        console.log(
+            `[integration] rebuilding integration/fullstacked (core + node binding) for ${state.slice(0, 12)}`
+        );
         child_process.execSync("npm run build && npm run build -w platform/node", {
             cwd: RUNTIME_DIR,
             stdio: "inherit",

@@ -1,7 +1,7 @@
 import type { Duplex } from "node:stream";
 import type { IncomingMessageWithDeny } from "../http/deny.ts";
 import type { Tunnel } from "../entities/schema.ts";
-import type { Reason } from "../constants.ts";
+import { isReason, type Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
 import { kv } from "../kv/index.ts";
 import { DEFAULT_CONNECT_TIMEOUT } from "../constants.ts";
@@ -75,7 +75,8 @@ export function setWardenClusterIpcSender(sender: ((msg: any, handle?: any) => v
 export async function acquireRelayedStream(
     tunnel: Tunnel,
     req: IncomingMessageWithDeny,
-    deadline: number
+    deadline: number,
+    signal?: AbortSignal
 ): Promise<Duplex> {
     if (!tunnel.edgeId) {
         throw new Error("Cannot acquire relayed stream for direct tunnel");
@@ -133,13 +134,15 @@ export async function acquireRelayedStream(
                 logger.warn("Warden", `Failed to write ticket tombstone: ${err?.message}`);
             });
         };
-        const onRuntimeClose = () => abandon("client_aborted");
+        // the runtime's stream ended (or its session closed) before the Edge answered
+        const onRuntimeClose = () =>
+            abandon(isReason(signal?.reason) ? signal.reason : "client_aborted");
 
         const safeReject = (reason: Reason) => {
             if (isSettled) return;
             isSettled = true;
             if (deadlineTimer) clearTimeout(deadlineTimer);
-            req.socket.off("close", onRuntimeClose);
+            signal?.removeEventListener("abort", onRuntimeClose);
             deleteParkedRelayedRequest(ticket);
             const err: any = new Error(`Relayed stream failed: ${reason}`);
             err.reason = reason;
@@ -150,7 +153,7 @@ export async function acquireRelayedStream(
             if (isSettled) return;
             isSettled = true;
             if (deadlineTimer) clearTimeout(deadlineTimer);
-            req.socket.off("close", onRuntimeClose);
+            signal?.removeEventListener("abort", onRuntimeClose);
             resolve(stream);
         };
 
@@ -158,7 +161,12 @@ export async function acquireRelayedStream(
         const deadlineTimer = setTimeout(() => abandon("connect_timeout"), msRemaining);
         deadlineTimer.unref();
 
-        req.socket.once("close", onRuntimeClose);
+        signal?.addEventListener("abort", onRuntimeClose, { once: true });
+        if (signal?.aborted) {
+            // ended while the ticket was created: no connect order went out
+            safeReject(isReason(signal.reason) ? signal.reason : "client_aborted");
+            return;
+        }
 
         parkRelayedRequest(ticket, {
             resolve: safeResolve,

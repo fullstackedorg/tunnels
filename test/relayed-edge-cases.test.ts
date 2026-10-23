@@ -14,6 +14,7 @@ import {
     jsonFetch,
     connectTestWs,
 } from "./helpers.ts";
+import { connectTunnelClient, tunnelClient } from "./mux-client.ts";
 
 test("relayed-edge-cases: offline edge closes runtime with 1014 edge_disconnected", async () => {
     clearHooks();
@@ -45,7 +46,7 @@ test("relayed-edge-cases: offline edge closes runtime with 1014 edge_disconnecte
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/`, {
+        const ws = tunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: token },
         });
 
@@ -101,7 +102,7 @@ test("relayed-edge-cases: saturated edge closes runtime with 1013 edge_saturated
         // Force saturation: maxPendingOrders = 0
         setSaturationLimits(0, 1024 * 1024);
 
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/`, {
+        const ws = tunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: token },
         });
 
@@ -150,7 +151,7 @@ test("relayed-edge-cases: direct connect timeout closes with 1014 connect_timeou
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/`, {
+        const ws = tunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: token },
         });
 
@@ -208,7 +209,7 @@ test("relayed-edge-cases: relayed deadline timeout closes with 1014 connect_time
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/`, {
+        const ws = tunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: token },
         });
 
@@ -257,7 +258,7 @@ test("relayed-edge-cases: target clean FIN closes runtime with 1000 target_close
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: token },
         });
 
@@ -309,7 +310,7 @@ test("relayed-edge-cases: target stream error closes runtime with 1011 stream_er
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: token },
         });
 

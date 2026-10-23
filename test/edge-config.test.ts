@@ -14,6 +14,7 @@ import {
     waitFor,
     waitForClose,
 } from "./helpers.ts";
+import { tunnelClient } from "./mux-client.ts";
 
 test("edge-config: the Edge applies its own HOOK_TIMEOUT", async () => {
     clearHooks();
@@ -41,7 +42,7 @@ test("edge-config: the Edge applies its own HOOK_TIMEOUT", async () => {
             internalPort: 9,
             edgeId: edgeEntity.id,
         });
-        const ws = new WebSocket(`ws://127.0.0.1:${h.port}/`, {
+        const ws = tunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         assert.deepEqual(await waitForClose(ws), { code: 1011, reason: "hook_error" });

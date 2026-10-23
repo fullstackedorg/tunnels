@@ -107,9 +107,12 @@ export async function jsonFetch(
     return { status: res.status, headers: res.headers, data };
 }
 
-export function waitForClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
+export function waitForClose(ws: {
+    readyState: number;
+    once(event: "close", listener: (code: number, reason: Buffer) => void): unknown;
+}): Promise<{ code: number; reason: string }> {
     return new Promise((resolve) => {
-        if (ws.readyState === ws.CLOSED) {
+        if (ws.readyState === WebSocket.CLOSED) {
             resolve({ code: 1006, reason: "" });
             return;
         }

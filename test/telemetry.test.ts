@@ -13,6 +13,7 @@ import {
     connectTestWs,
     jsonFetch,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 
 test("telemetry: full lifecycle hooks (tunnel_start, tunnel_connected, tunnel_end)", async () => {
     clearHooks();
@@ -56,7 +57,7 @@ test("telemetry: full lifecycle hooks (tunnel_start, tunnel_connected, tunnel_en
         });
         const tunnelToken = createRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 
@@ -144,7 +145,7 @@ test("telemetry: bandwidth accounting and custom /metrics HTTP route", async () 
         });
         const tunnelToken = createRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 

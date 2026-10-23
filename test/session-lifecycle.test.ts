@@ -16,6 +16,7 @@ import {
     waitFor,
     waitForClose,
 } from "./helpers.ts";
+import { connectTunnelClient, tunnelClient } from "./mux-client.ts";
 
 // 192.0.2.0/24 (TEST-NET-1) drops packets, so a dial to it stays pending until a timer fires.
 const BLACKHOLE = "192.0.2.1";
@@ -38,7 +39,7 @@ test("session-lifecycle: severing an established session fires tunnel_end exactl
             internalHost: "127.0.0.1",
             internalPort: echo.port,
         });
-        const ws = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         const echoed = new Promise((r) => ws.once("message", r));
@@ -68,7 +69,7 @@ test("session-lifecycle: severing a session before its target is ready fires tun
             started = true;
         });
         const tunnel = await createTunnel(h.baseUrl, { internalHost: BLACKHOLE, internalPort: 9 });
-        const ws = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         await waitFor(() => started);
@@ -96,7 +97,7 @@ test("session-lifecycle: runtime disconnecting during a direct dial ends with cl
             started = true;
         });
         const tunnel = await createTunnel(h.baseUrl, { internalHost: BLACKHOLE, internalPort: 9 });
-        const ws = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         await waitFor(() => started);
@@ -123,7 +124,7 @@ test("session-lifecycle: a runtime close reason outside the taxonomy is reported
             internalHost: "127.0.0.1",
             internalPort: echo.port,
         });
-        const ws = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         const echoed = new Promise((r) => ws.once("message", r));
@@ -161,7 +162,7 @@ test("session-lifecycle: target failure after handoff propagates the Edge's clos
             edgeId: edgeEntity.id,
         });
 
-        const ws = new WebSocket(`ws://127.0.0.1:${h.port}/`, {
+        const ws = tunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         assert.deepEqual(await waitForClose(ws), { code: 1014, reason: "connect_timeout" });
@@ -187,7 +188,7 @@ test("session-lifecycle: hub shutdown cancels pending relayed setups on the Edge
             edgeId: edgeEntity.id,
         });
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         await waitFor(() => lifeline.orders.some((o) => o.type === "connect_tunnel"));

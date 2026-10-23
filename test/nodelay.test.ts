@@ -15,6 +15,7 @@ import {
     waitFor,
     type TestHub,
 } from "./helpers.ts";
+import { connectTunnelClient, type TunnelClient } from "./mux-client.ts";
 
 const PART = Buffer.from("ping!");
 const ROUNDS = 20;
@@ -50,7 +51,7 @@ async function createTwoPartServer(): Promise<{ port: number; close: () => Promi
 }
 
 /** Median round trip of two sequential small writes followed by one reply. */
-async function medianRoundTrip(ws: WebSocket): Promise<number> {
+async function medianRoundTrip(ws: TunnelClient): Promise<number> {
     const timings: number[] = [];
     for (let i = 0; i < ROUNDS; i++) {
         const start = performance.now();
@@ -68,14 +69,14 @@ test("nodelay: direct tunnel write-write-read has no Nagle stall", async () => {
     clearHooks();
     const target = await createTwoPartServer();
     let hub: TestHub | null = null;
-    let ws: WebSocket | null = null;
+    let ws: TunnelClient | null = null;
     try {
         hub = await startTestHub();
         const tunnel = await createTunnel(hub.baseUrl, {
             internalHost: "127.0.0.1",
             internalPort: target.port,
         });
-        ws = await connectTestWs(`ws://127.0.0.1:${hub.port}/`, {
+        ws = await connectTunnelClient(`ws://127.0.0.1:${hub.port}/`, {
             headers: { Authorization: tunnel.token },
         });
 
@@ -94,7 +95,7 @@ test("nodelay: relayed tunnel write-write-read has no Nagle stall", async () => 
     const target = await createTwoPartServer();
     let hub: TestHub | null = null;
     let edge: EdgeInstance | null = null;
-    let ws: WebSocket | null = null;
+    let ws: TunnelClient | null = null;
     try {
         hub = await startTestHub();
         const edgeData = await createEdge(hub.baseUrl);
@@ -111,7 +112,7 @@ test("nodelay: relayed tunnel write-write-read has no Nagle stall", async () => 
             internalPort: target.port,
             edgeId: edgeData.id,
         });
-        ws = await connectTestWs(`ws://127.0.0.1:${hub.port}/`, {
+        ws = await connectTunnelClient(`ws://127.0.0.1:${hub.port}/`, {
             headers: { Authorization: tunnel.token },
         });
 

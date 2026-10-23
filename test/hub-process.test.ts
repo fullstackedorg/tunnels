@@ -14,6 +14,7 @@ import {
     waitFor,
     waitForClose,
 } from "./helpers.ts";
+import { connectTunnelClient, type TunnelClient } from "./mux-client.ts";
 
 test("hub-process: worker exit cleanup only removes presence still owned by that worker", async () => {
     const kv = new MemoryKVProvider();
@@ -72,9 +73,9 @@ async function runShutdownScenario(extraArgs: string[], keepSessionOpen: boolean
             method: "POST",
             body: { name: "t", internalHost: "127.0.0.1", internalPort: echo.port },
         });
-        let ws: WebSocket | null = null;
+        let ws: TunnelClient | null = null;
         if (keepSessionOpen) {
-            ws = await connectTestWs(`ws://127.0.0.1:${port}/`, {
+            ws = await connectTunnelClient(`ws://127.0.0.1:${port}/`, {
                 headers: { Authorization: created.data.token },
             });
             const echoed = new Promise((r) => ws!.once("message", r));

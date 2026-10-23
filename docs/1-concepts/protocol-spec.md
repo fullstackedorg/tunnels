@@ -27,16 +27,17 @@ flowchart TD
         ResolveTun -->|"Storage/KV down"| R503
         ResolveTun -->|"pass"| GateTun{"tunnel_request hook"}
         GateTun -->|"deny()"| RDeny
-        GateTun -->|"pass"| AcceptTun["101 Switching Protocols (stream paused)"]
-        AcceptTun --> EdgeCheck{"Relayed tunnel:\nEdge status?"}
-        EdgeCheck -->|"Offline"| Close1014["Close 1014 (edge_disconnected)"]
-        EdgeCheck -->|"Saturated"| Close1013["Close 1013 (edge_saturated)"]
-        EdgeCheck -->|"Ready / Direct"| StreamReady["Proceed to target dial / splicing"]
+        GateTun -->|"pass"| AcceptTun["101 Switching Protocols (tunnel session)"]
+        AcceptTun --> Open["OPEN frame (one per stream)"]
+        Open --> EdgeCheck{"Relayed tunnel:\nEdge status?"}
+        EdgeCheck -->|"Offline"| Reset1014["RESET edge_disconnected"]
+        EdgeCheck -->|"Saturated"| Reset1013["RESET edge_saturated"]
+        EdgeCheck -->|"Ready / Direct"| StreamReady["Target dial, OPENED, splicing"]
     end
 
     subgraph Data["After Upgrade"]
-        StreamReady --> Frames["Binary frames carry raw TCP bytes"]
-        StreamReady --> HB["Bidirectional heartbeat on every WebSocket"]
+        StreamReady --> Frames["Binary messages carry mux frames (many streams per WebSocket)"]
+        AcceptTun --> HB["Bidirectional heartbeat on every WebSocket"]
     end
 
     subgraph Lifeline["Lifeline (Edge <-> Hub)"]
@@ -257,18 +258,29 @@ A single deadline, owned by the Hub, bounds session setup. There are no per-stag
 
 ## 4. Data Framing
 
-Once a session is established:
+A runtime upgrade with a tunnel token opens a **tunnel session**: one WebSocket that carries any number of **streams**, each one TCP connection to the tunnel's target. Authentication and the gating hooks run once per session; every stream runs its own Edge liveness check, target dial, `tunnel_start` / `tunnel_connected` / `tunnel_end` hooks (with a request of its own: `id` is `<session id>.<stream id>`, plus `muxStreamId` and `openedAt`), and splicing. The runtime decides how many sessions to hold and which one a new stream goes on (it opens more when its sessions are busy, see the runtime's tunnel pool).
 
-1. Payload bytes are carried in binary WebSocket frames (opcode `0x2`), verbatim, with no wrapping or inspection.
-2. `permessage-deflate` is disabled on every WebSocket.
-3. Node.js stream backpressure applies end to end: when a writable buffer is full, the corresponding readable is paused until `drain`.
-4. The port a driver uses on the virtual host returned by `tunnel.register` is a runtime-side detail and is never sent to the Hub. The target is always `internalHost:internalPort` of the tunnel resolved from the token. `tunnel.register({ host })` itself takes the Hub's address as `host:port` (for example `tunnels.example.com:443`).
+1. Each binary WebSocket message (opcode `0x2`) is exactly one frame: `[type u8][stream id u32 big-endian][payload]`.
+
+    | Type | Name     | Direction     | Payload                                                          |
+    | :--- | :------- | :------------ | :--------------------------------------------------------------- |
+    | `1`  | `OPEN`   | Runtime → Hub | none                                                             |
+    | `2`  | `OPENED` | Hub → Runtime | none: the target is connected                                    |
+    | `3`  | `DATA`   | Both          | stream bytes, verbatim, at most 32 KiB per frame                 |
+    | `4`  | `WINDOW` | Both          | u32 big-endian credit increment                                  |
+    | `5`  | `FIN`    | Both          | none: the sender has no more bytes                               |
+    | `6`  | `RESET`  | Both          | utf-8 [close reason](#close-reason-taxonomy): the stream is over |
+
+2. The runtime picks stream ids, increasing, and never reuses one on a session. It may send `DATA` right after `OPEN`, before `OPENED`; the Hub holds those bytes until the target is spliced. A failed dial answers `RESET` with the reason instead of `OPENED`. A session over its stream limit (256) answers `RESET stream_limit`.
+3. **Flow control**: each side may send 256 KiB of `DATA` per stream beyond what the other side credited back; the receiver sends `WINDOW` as its consumer reads, so one slow stream never stalls the others on the WebSocket.
+4. `permessage-deflate` is disabled on every WebSocket.
+5. The port a driver uses on the virtual host returned by `tunnel.register` is a runtime-side detail and is never sent to the Hub. The target is always `internalHost:internalPort` of the tunnel resolved from the token. `tunnel.register({ host })` itself takes the Hub's address as `host:port` (for example `tunnels.example.com:443`).
+6. Closing the WebSocket ends every stream on it with the close reason. Severing (revocation, quota, tunnel updates) closes whole sessions.
 
 ### Symmetrical Teardown (No Half-Close)
 
-- When either side ends (FIN), errors, or closes, both sides are torn down. TCP half-close is not propagated.
-- Clean termination sends close code `1000` with `client_close` or `target_close`; errors use the codes in [Close Codes](#5-close-codes).
-- Teardown sends the close frame first and destroys underlying sockets upon receiving the WebSocket `'close'` event or stream `'finish'` event (with a 500 ms fallback safety timer). Hard errors (`stream_error`, `ECONNRESET`) destroy sockets immediately.
+- When either side of a stream ends (`FIN` or target FIN), the end is carried to the other side, its pending bytes flushed, then both are torn down. TCP half-close is not kept open.
+- A stream ends cleanly with `FIN` both ways; errors and aborts send `RESET` with the reason. The WebSocket close codes in [Close Codes](#5-close-codes) apply to whole sessions (and lifelines, relayed sockets).
 
 Protocols that work: PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1 (including keep-alive), HTTP/2 and gRPC, and interactive SSH sessions. Protocols that do **not** work: any client that half-closes its write side (`shutdown(SHUT_WR)`) and then waits for a reply on the read side, for example some HTTP/1.0 clients or `nc -N`-style request/response pipes.
 
@@ -282,12 +294,12 @@ Protocols that work: PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1 (includ
 | `1001` | Going Away       | `hub_shutdown`, `edge_shutdown`                                                                                                               |
 | `1008` | Policy Violation | `hook_denied`                                                                                                                                 |
 | `1011` | Internal Error   | `hook_error`, `stream_error`, `target_worker_dead`, `heartbeat_timeout`                                                                       |
-| `1013` | Try Again Later  | `edge_saturated`                                                                                                                              |
+| `1013` | Try Again Later  | `edge_saturated`, `stream_limit`                                                                                                              |
 | `1014` | Bad Gateway      | `target_unreachable`, `connect_timeout`, `relay_dial_failed`, `edge_disconnected`                                                             |
 
 ## Close Reason Taxonomy
 
-Only these strings are ever sent in close frames or reported as the primary taxonomy reason in `tunnel_end`, `edge_tunnel_end`, and `lifeline_disconnect`. A peer that closes with a reason outside the taxonomy (or none) is reported as `client_close` when the peer is on the runtime side (runtime sockets and lifelines on the Hub, relayed sockets on the Edge) and as `target_close` when it is on the target side (relayed sockets on the Hub). There are no dynamic messages across the wire (details go to logs), so every reason fits the 123-byte limit of RFC 6455 §5.5 without truncation. For internal telemetry hooks (`tunnel_end` and `edge_tunnel_end`), the underlying Node.js `Error` instance (if any) is passed as an optional fourth parameter (`error?: Error`) for logging and diagnostic inspection.
+Only these strings are ever sent in close frames and `RESET` frames or reported as the primary taxonomy reason in `tunnel_end`, `edge_tunnel_end`, and `lifeline_disconnect`. A peer that closes with a reason outside the taxonomy (or none) is reported as `client_close` when the peer is on the runtime side (runtime sockets and lifelines on the Hub, relayed sockets on the Edge) and as `target_close` when it is on the target side (relayed sockets on the Hub). There are no dynamic messages across the wire (details go to logs), so every reason fits the 123-byte limit of RFC 6455 §5.5 without truncation. For internal telemetry hooks (`tunnel_end` and `edge_tunnel_end`), the underlying Node.js `Error` instance (if any) is passed as an optional fourth parameter (`error?: Error`) for logging and diagnostic inspection.
 
 | Reason               | Applies to               | Meaning                                                                                                     |
 | :------------------- | :----------------------- | :---------------------------------------------------------------------------------------------------------- |
@@ -302,6 +314,7 @@ Only these strings are ever sent in close frames or reported as the primary taxo
 | `target_worker_dead` | Session                  | A Hub worker involved in the session died before handoff.                                                   |
 | `hook_denied`        | Session                  | A gating hook on the Edge denied the order.                                                                 |
 | `hook_error`         | Session                  | A gating hook on the Edge threw or timed out.                                                               |
+| `stream_limit`       | Stream                   | The tunnel session already carries its maximum of open streams.                                             |
 | `stream_error`       | Session                  | Network error during active streaming (`ECONNRESET`, `EPIPE`, ...), or KV unavailable during relayed setup. |
 | `heartbeat_timeout`  | Any WebSocket            | Nothing received from the peer for `HEARTBEAT_TIMEOUT`.                                                     |
 | `token_rolled`       | Session, lifeline        | The tunnel or edge token was rolled; access is revoked immediately.                                         |

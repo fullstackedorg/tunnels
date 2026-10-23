@@ -12,6 +12,7 @@ import {
     createTestEchoServer,
     jsonFetch,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 
 test("shutdown: clean hub shutdown with no active sessions returns exit code 0", async () => {
     const port = await getAvailablePort();
@@ -54,7 +55,7 @@ test("shutdown: clean hub shutdown with sessions draining in time returns exit c
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: token },
         });
 
@@ -99,7 +100,7 @@ test("shutdown: hub shutdown with lingering session exceeding timeout force-clos
         assert.equal(tunRes.status, 201);
         const token = tunRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${port}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${port}/`, {
             headers: { Authorization: token },
         });
 

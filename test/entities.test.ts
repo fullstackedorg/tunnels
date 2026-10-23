@@ -15,6 +15,7 @@ import {
     createTunnel,
     startTestHub,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 import type { Tunnel } from "../src/entities/schema.ts";
 
 test("entities: validation disallows client-provided id, token, and version", () => {
@@ -131,7 +132,7 @@ test("entities: ENTITY_CACHE_TTL and NEGATIVE_CACHE_TTL are applied to the token
         assert.equal(spy.sets.find((s) => s.key === `entity:tunnel:${tunnel.token}`)?.ttl, 9);
 
         await assert.rejects(
-            connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+            connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
                 headers: { Authorization: "tun_unknown" },
             })
         );

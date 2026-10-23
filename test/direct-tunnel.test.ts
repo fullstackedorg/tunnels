@@ -12,6 +12,7 @@ import {
     connectTestWs,
     jsonFetch,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 
 test("direct-tunnel: bidirectional streaming through direct TCP dial", async () => {
     clearHooks();
@@ -50,7 +51,7 @@ test("direct-tunnel: bidirectional streaming through direct TCP dial", async () 
         });
 
         // Connect WebSocket client presenting tunnel token
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: token },
         });
 
@@ -104,7 +105,7 @@ test("direct-tunnel: target unreachable closes with 1014 target_unreachable", as
         const token = createRes.data.token;
 
         // Connect WebSocket
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: token },
         });
 

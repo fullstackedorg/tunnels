@@ -12,6 +12,7 @@ import {
     connectTestWs,
     jsonFetch,
 } from "./helpers.ts";
+import { connectTunnelClient, type TunnelClient } from "./mux-client.ts";
 
 test("relayed-tunnel: end-to-end relayed data streaming through Edge lifeline", async () => {
     clearHooks();
@@ -83,7 +84,7 @@ test("relayed-tunnel: end-to-end relayed data streaming through Edge lifeline", 
         });
 
         // 4. Connect runtime WebSocket client
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 
@@ -164,7 +165,7 @@ test("relayed-tunnel: target dial failure before handoff sends 1014 target_unrea
         const tunnelToken = tunnelRes.data.token;
 
         // Connect client
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 
@@ -235,7 +236,7 @@ test("relayed-tunnel: edge gating hook denial returns hook_denied and error retu
             context.deny();
         });
 
-        const wsDeny = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const wsDeny = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
         const denyClose = await new Promise<{ code: number; reason: string }>((resolve) => {
@@ -252,7 +253,7 @@ test("relayed-tunnel: edge gating hook denial returns hook_denied and error retu
             throw new Error("Simulated hook crash");
         });
 
-        const wsErr = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const wsErr = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
         const errClose = await new Promise<{ code: number; reason: string }>((resolve) => {
@@ -329,13 +330,20 @@ test("relayed-tunnel: cancel_tunnel order cancels in-flight dial and emits edge_
             edgeTunnelEndReason = reason;
         });
 
-        // Client connects then immediately terminates socket before handoff
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        // Client connects, then terminates its socket as soon as the Edge has the connect order
+        // (before the Edge's relayed stream reaches the Hub)
+        let ws: TunnelClient | null = null;
+        let ordered = false;
+        registerHook("edge_tunnel_start", () => {
+            ordered = true;
+            ws?.terminate();
+        });
+        ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
-
-        // Terminate client socket while setup is in-flight
-        ws.terminate();
+        for (let i = 0; i < 50 && !ordered; i++) {
+            await new Promise((r) => setTimeout(r, 20));
+        }
 
         // Wait for cancel_tunnel order to reach Edge and edge_tunnel_end to fire
         for (let i = 0; i < 50; i++) {

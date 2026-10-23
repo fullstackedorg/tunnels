@@ -11,6 +11,7 @@ import {
     connectTestWs,
     jsonFetch,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 
 test("revocation: rolling tunnel token severs active session with 1000 token_rolled", async () => {
     const echo = await createTestEchoServer();
@@ -39,7 +40,7 @@ test("revocation: rolling tunnel token severs active session with 1000 token_rol
         const tunnelToken = createRes.data.token;
 
         // Connect client
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 
@@ -62,7 +63,7 @@ test("revocation: rolling tunnel token severs active session with 1000 token_rol
 
         // Old token should be rejected
         await assert.rejects(
-            connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+            connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
                 headers: { Authorization: tunnelToken },
             })
         );
@@ -99,7 +100,7 @@ test("revocation: deleting tunnel severs active session with 1000 tunnel_deleted
         const tunnelToken = createRes.data.token;
 
         // Connect client
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 
@@ -215,7 +216,7 @@ test("revocation: programmatic severSessions API severs matching sessions", asyn
         const tunnelId = createRes.data.id;
         const tunnelToken = createRes.data.token;
 
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 

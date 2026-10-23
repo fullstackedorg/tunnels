@@ -11,6 +11,7 @@ import {
     connectTestWs,
     jsonFetch,
 } from "./helpers.ts";
+import { connectTunnelClient } from "./mux-client.ts";
 
 test("edge-workers: clustered edge with 2 workers streams data end-to-end", async () => {
     const echo = await createTestEchoServer();
@@ -81,7 +82,7 @@ test("edge-workers: clustered edge with 2 workers streams data end-to-end", asyn
         const tunnelToken = tunnelRes.data.token;
 
         // Connect runtime client and stream data
-        const ws = await connectTestWs(`ws://127.0.0.1:${hubPort}/`, {
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
             headers: { Authorization: tunnelToken },
         });
 

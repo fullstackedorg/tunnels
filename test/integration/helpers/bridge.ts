@@ -1,5 +1,6 @@
 import net from "node:net";
-import WebSocket, { createWebSocketStream } from "ws";
+import WebSocket from "ws";
+import { MuxSession } from "../../../src/mux/session.ts";
 import { getAvailablePort } from "../../helpers.ts";
 
 export interface TunnelBridge {
@@ -7,6 +8,7 @@ export interface TunnelBridge {
     close: () => Promise<void>;
 }
 
+/** A local TCP listener whose connections are streams of one tunnel session (re-dialed once closed). */
 export async function createTunnelBridge(
     hubUrl: string,
     tunnelToken: string
@@ -14,65 +16,35 @@ export async function createTunnelBridge(
     const port = await getAvailablePort();
     const wsUrl = hubUrl.replace(/^http:/, "ws:");
     const sockets = new Set<net.Socket>();
-    const wsList = new Set<WebSocket>();
+    let session: Promise<MuxSession> | null = null;
 
-    const server = net.createServer((tcpSocket) => {
+    const dial = () =>
+        new Promise<MuxSession>((resolve, reject) => {
+            const ws = new WebSocket(wsUrl, {
+                headers: { Authorization: tunnelToken },
+                perMessageDeflate: false,
+            });
+            ws.once("open", () => resolve(new MuxSession(ws)));
+            ws.once("error", reject);
+        });
+
+    const server = net.createServer(async (tcpSocket) => {
         sockets.add(tcpSocket);
-        const earlyChunks: Buffer[] = [];
-        let isWsReady = false;
-        let wsStream: any = null;
-
-        tcpSocket.on("data", (chunk: Buffer) => {
-            if (!isWsReady) {
-                earlyChunks.push(chunk);
-            } else if (wsStream && !wsStream.destroyed) {
-                wsStream.write(chunk);
-            }
-        });
-
-        const ws = new WebSocket(wsUrl, {
-            headers: { Authorization: tunnelToken },
-        });
-        wsList.add(ws);
-
-        ws.once("open", () => {
-            wsStream = createWebSocketStream(ws);
-            isWsReady = true;
-
-            for (const chunk of earlyChunks) {
-                wsStream.write(chunk);
-            }
-            earlyChunks.length = 0;
-
-            wsStream.on("data", (chunk: Buffer) => {
-                tcpSocket.write(chunk);
-            });
-
-            wsStream.on("error", () => {
-                tcpSocket.destroy();
-            });
-            tcpSocket.on("error", () => {
-                wsStream.destroy();
-            });
-        });
-
-        ws.once("error", () => {
+        tcpSocket.once("close", () => sockets.delete(tcpSocket));
+        tcpSocket.on("error", () => {});
+        tcpSocket.pause();
+        try {
+            if (!session || !(await session).open) session = dial();
+            const { stream } = (await session).startStream();
+            stream.on("error", () => tcpSocket.destroy());
+            tcpSocket.on("error", () => stream.destroy());
+            stream.once("close", () => tcpSocket.destroy());
+            tcpSocket.pipe(stream).pipe(tcpSocket);
+            tcpSocket.resume();
+        } catch {
+            session = null;
             tcpSocket.destroy();
-        });
-
-        tcpSocket.once("close", () => {
-            sockets.delete(tcpSocket);
-            wsList.delete(ws);
-            try {
-                ws.close();
-            } catch {}
-        });
-
-        ws.once("close", () => {
-            sockets.delete(tcpSocket);
-            wsList.delete(ws);
-            tcpSocket.destroy();
-        });
+        }
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -87,12 +59,8 @@ export async function createTunnelBridge(
                 s.destroy();
             }
             sockets.clear();
-            for (const ws of wsList) {
-                try {
-                    ws.terminate();
-                } catch {}
-            }
-            wsList.clear();
+            const open = await session?.catch(() => null);
+            open?.ws.terminate();
             await new Promise<void>((resolve) => server.close(() => resolve()));
         },
     };

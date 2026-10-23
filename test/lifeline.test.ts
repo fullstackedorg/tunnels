@@ -20,6 +20,7 @@ import {
     waitFor,
     waitForClose,
 } from "./helpers.ts";
+import { connectTunnelClient, tunnelClient } from "./mux-client.ts";
 
 test("lifeline: a superseded lifeline never unregisters its replacement on the same worker", async () => {
     clearHooks();
@@ -44,7 +45,7 @@ test("lifeline: a superseded lifeline never unregisters its replacement on the s
             internalPort: 9,
             edgeId: edge.id,
         });
-        const runtime = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const runtime = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         await waitFor(() => second.orders.some((o) => o.type === "connect_tunnel"));
@@ -129,7 +130,7 @@ test("lifeline: ticket and presence TTLs follow CONNECT_TIMEOUT and HEARTBEAT_TI
             internalPort: 9,
             edgeId: edge.id,
         });
-        const runtime = await connectTestWs(`ws://127.0.0.1:${h.port}/`, {
+        const runtime = await connectTunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         await waitFor(() => lifeline.orders.some((o) => o.type === "connect_tunnel"));
@@ -164,7 +165,7 @@ test("lifeline: KV unavailable during relayed setup closes the runtime with 1011
         });
 
         spy.failKey = (key) => key.startsWith("edge:") || key.startsWith("relayed_request:");
-        const runtime = new WebSocket(`ws://127.0.0.1:${h.port}/`, {
+        const runtime = tunnelClient(`ws://127.0.0.1:${h.port}/`, {
             headers: { Authorization: tunnel.token },
         });
         assert.deepEqual(await waitForClose(runtime), { code: 1011, reason: "stream_error" });

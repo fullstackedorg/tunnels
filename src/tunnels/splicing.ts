@@ -1,22 +1,14 @@
-import { pipeline } from "node:stream";
 import type { Duplex } from "node:stream";
-import type { WebSocket } from "ws";
 import type { IncomingMessageWithDeny } from "../http/deny.ts";
 import type { Tunnel } from "../entities/schema.ts";
 import { isReason, type Reason } from "../constants.ts";
-import { unregisterSession } from "./registry.ts";
 import { runAwaitedHook, dispatchTelemetry } from "../utils/hooks.ts";
-import {
-    coalesceFrameWrites,
-    getPeerCloseReason,
-    performSymmetricalTeardown,
-} from "../utils/ws-stream.ts";
-import { getLocalCloseReason } from "../ws/heartbeat.ts";
+import { getPeerCloseReason } from "../utils/ws-stream.ts";
+import type { MuxStream } from "../mux/session.ts";
 
 export interface SpliceOptions {
-    sessionId: string;
-    runtimeWs: WebSocket;
-    runtimeDuplex: Duplex;
+    /** The runtime's stream on its multiplexed session. */
+    stream: MuxStream;
     targetStream: Duplex;
     req: IncomingMessageWithDeny;
     tunnel: Tunnel;
@@ -25,54 +17,67 @@ export interface SpliceOptions {
 export type SessionTeardown = (reason: Reason, error?: Error) => void;
 
 /**
- * Splices an established session and returns its idempotent teardown. Streams are resumed
- * only after the tunnel_connected hook settles, so hooks observe every byte.
+ * Splices an established stream to its target and returns its idempotent teardown. Data flows
+ * only after the tunnel_connected hook settles, so hooks observe every byte. Either side ending
+ * ends both: the runtime's FIN or RESET (client_close / its reason), the target's end
+ * (target_close, or the Edge's close reason for a relayed target).
  */
 export function spliceTunnelStreams(options: SpliceOptions): SessionTeardown {
-    const { sessionId, runtimeWs, runtimeDuplex, targetStream, req, tunnel } = options;
+    const { stream, targetStream, req, tunnel } = options;
 
     let closed = false;
     const teardown: SessionTeardown = (reason, error) => {
         if (closed) return;
         closed = true;
-        (runtimeDuplex as any)._closeReason = reason;
-        unregisterSession(sessionId);
-        performSymmetricalTeardown({
-            ws: runtimeWs,
-            duplex: runtimeDuplex,
-            destinationStream: targetStream,
-            reason,
-            error,
-        });
+        if (!stream.destroyed) {
+            stream.closeReason = reason;
+            stream.destroy();
+        }
+        if (!targetStream.destroyed) targetStream.destroy();
         dispatchTelemetry("tunnel_end", req, tunnel, reason, error);
     };
 
-    // A relayed target carries the Edge's close reason (e.g. target_unreachable after handoff).
     const targetEndReason = (): Reason => {
         const peer = getPeerCloseReason(targetStream);
         return isReason(peer) ? peer : "target_close";
     };
-    targetStream.prependOnceListener("end", () => {
-        (runtimeDuplex as any)._closeReason = targetEndReason();
+    const runtimeEndReason = (): Reason => {
+        const peer = stream.peerCloseReason;
+        return isReason(peer) ? peer : "client_close";
+    };
+
+    // A burst of small DATA frames (a driver's back-to-back writes) reaches the target in one write.
+    let corked = false;
+    stream.prependListener("data", () => {
+        if (corked) return;
+        corked = true;
+        targetStream.cork();
+        process.nextTick(() => {
+            corked = false;
+            targetStream.uncork();
+        });
     });
 
-    coalesceFrameWrites(runtimeWs, targetStream);
-    pipeline(runtimeDuplex, targetStream, (err) => {
-        teardown(err ? "stream_error" : "client_close", err ?? undefined);
-    });
-    pipeline(targetStream, runtimeDuplex, (err) => {
-        teardown(err ? "stream_error" : targetEndReason(), err ?? undefined);
-    });
-    targetStream.once("error", (err) => teardown("stream_error", err));
-    runtimeWs.once("close", (_code, reasonBuf) => {
-        const peer = reasonBuf?.toString("utf-8");
-        teardown(getLocalCloseReason(runtimeWs) ?? (isReason(peer) ? peer : "client_close"));
-    });
-
-    void runAwaitedHook("tunnel_connected", req, tunnel, runtimeDuplex, targetStream).then(() => {
+    // The runtime finished sending (FIN): the target gets the last bytes, then both close.
+    stream.once("end", () => {
         if (closed) return;
-        runtimeDuplex.resume();
-        targetStream.resume();
+        targetStream.end(() => teardown(runtimeEndReason()));
+    });
+    stream.once("close", () => teardown(runtimeEndReason()));
+    stream.on("error", (err) => teardown("stream_error", err));
+
+    // The target finished: the runtime gets the last bytes and FIN, then both close.
+    targetStream.once("end", () => {
+        if (closed) return;
+        stream.end(() => teardown(targetEndReason()));
+    });
+    targetStream.once("close", () => teardown(targetEndReason()));
+    targetStream.on("error", (err) => teardown("stream_error", err));
+
+    void runAwaitedHook("tunnel_connected", req, tunnel, stream, targetStream).then(() => {
+        if (closed) return;
+        stream.pipe(targetStream, { end: false });
+        targetStream.pipe(stream, { end: false });
     });
 
     return teardown;
