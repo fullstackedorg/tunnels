@@ -78,6 +78,13 @@ export class MuxStream extends Duplex {
         const waiters = this.creditWaiters;
         this.creditWaiters = [];
         waiters.forEach((resolve) => resolve());
+        // After the peer's FIN, a RESET only carries its reason: the bytes it sent before are
+        // still delivered, then the stream closes (a consumer that never reads gets 5 s).
+        if (this.finReceived && !this.readableEnded) {
+            this.once("end", () => this.destroy());
+            setTimeout(() => this.destroy(), 5000).unref();
+            return;
+        }
         this.destroy();
     }
 
@@ -106,6 +113,12 @@ export class MuxStream extends Duplex {
 
     override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (err?: Error) => void) {
         this.writeChunk(chunk).then(() => callback(), callback);
+    }
+
+    // Writes buffered while corked go out together: one DATA frame for a burst of small writes.
+    override _writev(chunks: { chunk: Buffer }[], callback: (err?: Error | null) => void): void {
+        const data = Buffer.concat(chunks.map((c) => c.chunk));
+        this.writeChunk(data).then(() => callback(), callback);
     }
 
     private async writeChunk(chunk: Buffer): Promise<void> {

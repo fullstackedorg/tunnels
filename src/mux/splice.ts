@@ -47,30 +47,45 @@ export function spliceStreams(options: SpliceOptions): SpliceTeardown {
         return isReason(peer) ? peer : clean;
     };
 
-    // A burst of small DATA frames (a driver's back-to-back writes) reaches the next hop in one write.
-    let corked = false;
-    stream.prependListener("data", () => {
-        if (corked) return;
-        corked = true;
-        other.cork();
-        process.nextTick(() => {
-            corked = false;
-            other.uncork();
+    // A burst of small writes reaches the next hop in one write (one DATA frame toward a session):
+    // a driver's back-to-back writes one way, a target's headers then body the other.
+    const coalesce = (from: Duplex, to: Duplex) => {
+        let corked = false;
+        from.prependListener("data", () => {
+            if (corked) return;
+            corked = true;
+            to.cork();
+            setImmediate(() => {
+                corked = false;
+                to.uncork();
+            });
         });
-    });
+    };
+    coalesce(stream, other);
+    coalesce(other, stream);
 
+    // A side that ended (FIN) closes right after; its last bytes are still on their way to the
+    // other side, so only the other side finishing (or failing) tears down.
+    let streamEnded = false;
+    let otherEnded = false;
     stream.once("end", () => {
         if (closed) return;
+        streamEnded = true;
         other.end(() => teardown(endReason(stream, streamEnd)));
     });
-    stream.once("close", () => teardown(endReason(stream, streamEnd)));
+    stream.once("close", () => {
+        if (!streamEnded) teardown(endReason(stream, streamEnd));
+    });
     stream.on("error", (err) => teardown("stream_error", err));
 
     other.once("end", () => {
         if (closed) return;
+        otherEnded = true;
         stream.end(() => teardown(endReason(other, otherEnd)));
     });
-    other.once("close", () => teardown(endReason(other, otherEnd)));
+    other.once("close", () => {
+        if (!otherEnded) teardown(endReason(other, otherEnd));
+    });
     other.on("error", (err) => teardown("stream_error", err));
 
     // A side that already closed (it raced the setup) ends both now: its close event is gone.
