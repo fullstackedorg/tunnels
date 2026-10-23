@@ -3,6 +3,7 @@ import type { AppConfig } from "../utils/config.ts";
 import type { Reason } from "../constants.ts";
 import { logger } from "../utils/logger.ts";
 import { registerHeartbeat } from "../ws/heartbeat.ts";
+import { MAX_WS_PAYLOAD } from "../ws/index.ts";
 import { drainAndCloseEdgeSessions } from "./streams.ts";
 import { closeRelaySessions, openRelaySession, readEdgeToken } from "./relay.ts";
 
@@ -87,6 +88,7 @@ export class EdgeLifeline {
 
         const ws = new WebSocket(hubUrl, {
             perMessageDeflate: false,
+            maxPayload: MAX_WS_PAYLOAD,
             headers: {
                 Authorization: token,
                 version: "0.1.0",

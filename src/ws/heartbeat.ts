@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import type { Reason } from "../constants.ts";
+import { logger } from "../utils/logger.ts";
 import {
     CLOSE_CODES,
     DEFAULT_HEARTBEAT_INTERVAL,
@@ -100,6 +101,10 @@ export function setHeartbeatConfig(intervalSeconds: number, timeoutSeconds: numb
     }
 }
 
+function onError(err: Error): void {
+    logger.debug("WebSocket", `Protocol error: ${err.message}`);
+}
+
 export function registerHeartbeat(
     ws: WebSocket,
     options?: { onSweep?: () => void; onTimeout?: () => void }
@@ -118,6 +123,9 @@ export function registerHeartbeat(
     ws.on("pong", onFrame);
     ws.on("ping", onFrame);
     ws.on("message", onFrame);
+    // ws closes the WebSocket after a protocol error (1009 for a message over maxPayload, 1002,
+    // 1007) and the close handlers report it; unheard, the "error" event would end the process.
+    ws.on("error", onError);
 
     connections.set(ws, record);
     ensureSweepTimer();

@@ -211,3 +211,30 @@ test("ingress upgrade: relay sessions need a valid edge token, other credentials
         cleanupTempDir(tempDir);
     }
 });
+
+test("ingress upgrade: a failing upgrade answers 500 and the Hub keeps serving", async () => {
+    clearHooks();
+    clearWebSocketRoutes();
+    const port = await getAvailablePort();
+    const tempDir = createTempDir("ingress-upgrade-");
+    const config = parseConfig(["--port", String(port), "--data-dir", tempDir]);
+    const hub = await startHub(config);
+
+    // an async route that rejects: unhandled, the rejection would end the process
+    const unreg = registerWebSocketRoute("/broken-ws", async () => {
+        throw new Error("route failed");
+    });
+
+    try {
+        const res = await makeUpgradeRequest(port, "/broken-ws");
+        assert.equal(res.statusCode, 500);
+        assert.equal(JSON.parse(res.body).error, "Internal Server Error");
+
+        const after = await makeUpgradeRequest(port, "/unknown");
+        assert.equal(after.statusCode, 404, "the Hub still routes upgrades");
+    } finally {
+        unreg();
+        await hub.close();
+        cleanupTempDir(tempDir);
+    }
+});

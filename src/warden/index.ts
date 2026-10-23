@@ -161,7 +161,10 @@ export async function openRelayedStream(
             },
             (err) => {
                 const peer = err?.reason;
-                if (isReason(peer) && peer !== "client_close") fail(peer);
+                // The session dropped before OPENED: no target was reached, the Edge went away
+                // (target_close is only how a reasonless Edge close ends opened streams).
+                if (!session.open && peer === "target_close") fail("edge_disconnected");
+                else if (isReason(peer) && peer !== "client_close") fail(peer);
                 else fail(session.open ? "stream_error" : "edge_disconnected");
             }
         );

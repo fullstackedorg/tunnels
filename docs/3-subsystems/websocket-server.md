@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-    Upgrade["Paused upgrade request"] --> Engine["WebSocketServer\n(noServer: true, perMessageDeflate: false)"]
+    Upgrade["Paused upgrade request"] --> Engine["WebSocketServer\n(noServer: true, perMessageDeflate: false,\nmaxPayload: 64 KiB)"]
     Engine --> Handshake["Handshake (Sec-WebSocket-Accept)"]
     Handshake --> WS["ws.WebSocket"]
     WS --> Registry["Register in heartbeat sweep"]
@@ -23,24 +23,24 @@ The WebSocket server has no listening port of its own. It completes upgrades han
 
 - `noServer: true`: upgrades come from the HTTP server.
 - `perMessageDeflate: false`: tunneled bytes are often already compressed or encrypted; compression would cost CPU and memory for no gain.
-- `maxPayload`: bounded (default of the `ws` library) so a single frame cannot exhaust memory.
+- `maxPayload: 64 KiB` (`MAX_WS_PAYLOAD`), on the Hub's server and on the Edge's lifeline and relay dials alike. A mux frame is at most 32 KiB of payload plus a 5-byte header (an `OPEN` carries at most a tunnel's 16 KB metadata) and lifeline orders are a few bytes, so a larger message is a broken or hostile peer: `ws` closes the WebSocket with `1009` before buffering it, instead of the library default of 100 MiB per message.
 
 ## Streams
 
 A `MuxSession` (`src/mux/`) wraps one WebSocket and carries many streams; either side can open them (the runtime on a tunnel session, the Hub on a relay session). Each stream is a `MuxStream`, a `stream.Duplex`:
 
-| Stream side           | Frames                       | Behavior                                                                                                      |
-| :-------------------- | :--------------------------- | :------------------------------------------------------------------------------------------------------------ |
-| `stream.write(chunk)` | `DATA` (at most 32 KiB each) | Waits for the peer's credit (`WINDOW`) and for the WebSocket buffer to drain below 1 MiB.                     |
-| `data` event          | `DATA` received              | Credit is returned to the peer (`WINDOW`) as the consumer reads.                                              |
-| `stream.end()`        | `FIN`                        | The sender has no more bytes.                                                                                 |
-| `stream.destroy()`    | `RESET`                      | Carries `stream.closeReason` (or `stream_error` / `client_close`); the peer's reason is in `peerCloseReason`. |
+| Stream side           | Frames                       | Behavior                                                                                                                                   |
+| :-------------------- | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream.write(chunk)` | `DATA` (at most 32 KiB each) | Waits for the peer's credit (`WINDOW`) and for the WebSocket buffer to drain below 1 MiB.                                                  |
+| `data` event          | `DATA` received              | Credit is returned to the peer (`WINDOW`) as the consumer reads; bytes beyond the credit granted end the stream with `RESET stream_error`. |
+| `stream.end()`        | `FIN`                        | The sender has no more bytes.                                                                                                              |
+| `stream.destroy()`    | `RESET`                      | Carries `stream.closeReason` (or `stream_error` / `client_close`); the peer's reason is in `peerCloseReason`.                              |
 
 Closing the WebSocket ends every stream on it with the close reason. Streams are spliced so that the end of either direction ends both; half-close is not supported (see [Symmetrical Teardown](../1-concepts/protocol-spec.md#symmetrical-teardown-no-half-close)).
 
 ## Heartbeat
 
-Every WebSocket accepted or opened by a process (lifelines, runtime sockets, relay sessions) is added to one shared sweep timer that runs the [bidirectional heartbeat](../1-concepts/protocol-spec.md#3-heartbeat-all-websocket-connections): it sends a `ping` every `HEARTBEAT_INTERVAL` and terminates connections that have received nothing for `HEARTBEAT_TIMEOUT` (`heartbeat_timeout`). No per-connection timers are allocated.
+Every WebSocket accepted or opened by a process (lifelines, runtime sockets, relay sessions) is added to one shared sweep timer that runs the [bidirectional heartbeat](../1-concepts/protocol-spec.md#3-heartbeat-all-websocket-connections): it sends a `ping` every `HEARTBEAT_INTERVAL` and terminates connections that have received nothing for `HEARTBEAT_TIMEOUT` (`heartbeat_timeout`). No per-connection timers are allocated. Registering also listens for the WebSocket's `error` event: `ws` emits it on a protocol error (`1009` for a message over `maxPayload`, `1002`, `1007`) and then closes the connection, whose close handlers report it; unheard, the event would end the process.
 
 ## Close Codes and Reasons
 

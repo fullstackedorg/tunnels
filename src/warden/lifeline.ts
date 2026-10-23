@@ -104,74 +104,83 @@ export async function wardenLifeline(
     }
 
     const wss = createWebSocketServer();
-    wss.handleUpgrade(req, socket, head, async (ws) => {
-        const workerId = logger.getWorkerIdentity();
+    wss.handleUpgrade(req, socket, head, (ws) => {
+        // A KV failure here (Redis down) closes this lifeline: the Edge dials again
+        acceptLifeline(req, ws, edge).catch((err) => {
+            logger.error("Warden", `Lifeline setup of edge ${edge.id} failed`, { error: err });
+            if (edgeLifelines.get(edge.id) === ws) edgeLifelines.delete(edge.id);
+            closeWithReason(ws, "stream_error");
+        });
+    });
+}
 
-        // 1. Supersede existing lifeline
-        const existing = edgeLifelines.get(edge.id);
-        if (existing) {
-            closeWithReason(existing, "superseded");
-        } else {
-            const currentWorker = await kv.get<string>(`edge:${edge.id}:worker`);
-            if (currentWorker && currentWorker !== workerId && clusterIpcSender) {
-                clusterIpcSender({
-                    type: "close_lifeline",
-                    target: currentWorker,
-                    edgeId: edge.id,
-                    reason: "superseded",
-                });
-            }
-        }
+async function acceptLifeline(req: IncomingMessageWithDeny, ws: WebSocket, edge: Edge) {
+    const workerId = logger.getWorkerIdentity();
+    // first, so its "error" listener is there before anything is awaited
+    registerHeartbeat(ws, {
+        onSweep: () => {
+            refreshPresence(edge.id).catch(() => {});
+        },
+    });
 
-        // 2. Version update if changed
-        const versionHeader = req.headers["version"];
-        const versionStr = Array.isArray(versionHeader) ? versionHeader[0] : versionHeader;
-        if (versionStr && versionStr !== edge.version) {
-            storage.update("edge", edge.id, { version: versionStr }).catch((err) => {
-                logger.warn("Warden", `Failed to update edge version: ${err?.message}`);
+    // 1. Supersede existing lifeline
+    const existing = edgeLifelines.get(edge.id);
+    if (existing) {
+        closeWithReason(existing, "superseded");
+    } else {
+        const currentWorker = await kv.get<string>(`edge:${edge.id}:worker`);
+        if (currentWorker && currentWorker !== workerId && clusterIpcSender) {
+            clusterIpcSender({
+                type: "close_lifeline",
+                target: currentWorker,
+                edgeId: edge.id,
+                reason: "superseded",
             });
         }
+    }
 
-        // 3. Register lifeline & presence
-        edgeLifelines.set(edge.id, ws);
-        await refreshPresence(edge.id).catch((err) => {
-            logger.warn("Warden", `Failed to write presence of edge ${edge.id}: ${err?.message}`);
+    // 2. Version update if changed
+    const versionHeader = req.headers["version"];
+    const versionStr = Array.isArray(versionHeader) ? versionHeader[0] : versionHeader;
+    if (versionStr && versionStr !== edge.version) {
+        storage.update("edge", edge.id, { version: versionStr }).catch((err) => {
+            logger.warn("Warden", `Failed to update edge version: ${err?.message}`);
         });
+    }
 
-        registerHeartbeat(ws, {
-            onSweep: () => {
-                refreshPresence(edge.id).catch(() => {});
-            },
-        });
+    // 3. Register lifeline & presence
+    edgeLifelines.set(edge.id, ws);
+    await refreshPresence(edge.id).catch((err) => {
+        logger.warn("Warden", `Failed to write presence of edge ${edge.id}: ${err?.message}`);
+    });
 
-        // 4. A relay session kept warm here, so the first stream skips the Edge's dial (asked on
-        // this lifeline even when an earlier one was asked already)
-        if (!liveRelays(edge.id).length) requestRelay(edge.id, true);
+    // 4. A relay session kept warm here, so the first stream skips the Edge's dial (asked on
+    // this lifeline even when an earlier one was asked already)
+    if (!liveRelays(edge.id).length) requestRelay(edge.id, true);
 
-        // 5. The Edge reports relay sessions it could not dial
-        ws.on("message", (data: Buffer | string) => {
-            try {
-                const text = typeof data === "string" ? data : data.toString("utf-8");
-                const msg = JSON.parse(text);
-                if (msg?.type !== "open_relay_failed" || typeof msg.worker !== "string") return;
-                if (msg.worker === workerId) {
-                    relayRequestFailed(edge.id);
-                } else if (clusterIpcSender) {
-                    clusterIpcSender({ type: "relay_failed", target: msg.worker, edgeId: edge.id });
-                }
-            } catch (err) {
-                logger.warn("Warden", `Malformed lifeline frame: ${(err as any)?.message}`);
+    // 5. The Edge reports relay sessions it could not dial
+    ws.on("message", (data: Buffer | string) => {
+        try {
+            const text = typeof data === "string" ? data : data.toString("utf-8");
+            const msg = JSON.parse(text);
+            if (msg?.type !== "open_relay_failed" || typeof msg.worker !== "string") return;
+            if (msg.worker === workerId) {
+                relayRequestFailed(edge.id);
+            } else if (clusterIpcSender) {
+                clusterIpcSender({ type: "relay_failed", target: msg.worker, edgeId: edge.id });
             }
-        });
+        } catch (err) {
+            logger.warn("Warden", `Malformed lifeline frame: ${(err as any)?.message}`);
+        }
+    });
 
-        // 6. Cleanup on disconnect
-        ws.once("close", (_code, reasonBuf) => {
-            const peerReason = reasonBuf?.toString("utf-8");
-            const reason: Reason =
-                getLocalCloseReason(ws) ?? (isReason(peerReason) ? peerReason : "client_close");
-            onLifelineClosed(edge, ws, workerId, reason).catch((err) => {
-                logger.warn("Warden", `Lifeline cleanup failed: ${err?.message}`);
-            });
+    // 6. Cleanup on disconnect
+    ws.once("close", (_code, reasonBuf) => {
+        const peerReason = reasonBuf?.toString("utf-8");
+        const reason: Reason =
+            getLocalCloseReason(ws) ?? (isReason(peerReason) ? peerReason : "client_close");
+        onLifelineClosed(edge, ws, workerId, reason).catch((err) => {
+            logger.warn("Warden", `Lifeline cleanup failed: ${err?.message}`);
         });
     });
 }

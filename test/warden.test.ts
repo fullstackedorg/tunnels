@@ -153,6 +153,23 @@ test("warden: a relayed stream opens with the target in its OPEN, or edge_satura
     closeRelays(edge, "edge_deleted");
 });
 
+test("warden: a relay session dropping before OPENED fails the stream with edge_disconnected", async () => {
+    configureRelays({ request: () => {}, keepWarm: () => false });
+    const edge = "edge-drop-1";
+    const ws = fakeRelayWs();
+    registerRelay(edge, ws);
+    const tunnel: any = { id: "t1", name: "n", internalHost: "h", internalPort: 1, edgeId: edge };
+    const req: any = { id: "s.2", clientIp: "203.0.113.1" };
+
+    const opening = openRelayedStream(tunnel, req, Date.now() + 1000);
+    await new Promise((r) => setImmediate(r));
+    // the Edge's WebSocket drops without a close reason, no target was ever dialed
+    ws.readyState = 3;
+    ws.emit("close", 1006, Buffer.alloc(0));
+    await assert.rejects(opening, (e: any) => e.reason === "edge_disconnected");
+    closeRelays(edge, "edge_deleted");
+});
+
 test("warden: lifeline connection, presence in KV, and superseding older lifeline", async () => {
     const hubPort = await getAvailablePort();
     const dir = createTempDir("warden-life-");

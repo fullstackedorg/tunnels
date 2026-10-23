@@ -21,7 +21,8 @@ export interface StreamTransport {
 
 /**
  * One multiplexed stream as a Node Duplex: writes become DATA frames within the peer's credit,
- * received bytes are pushed and credit is returned as the consumer reads them. `end()` sends FIN;
+ * received bytes are pushed and credit is returned as the consumer reads them (bytes beyond the
+ * credit granted RESET the stream with stream_error). `end()` sends FIN;
  * `destroy()` before both FINs sends RESET with `closeReason` (or stream_error / client_close).
  */
 export class MuxStream extends Duplex {
@@ -54,6 +55,12 @@ export class MuxStream extends Duplex {
     handleData(payload: Buffer): void {
         if (this.destroyed || this.finReceived) return;
         this.received += payload.length;
+        // a peer sending past the credit it was granted would grow the buffer without bound
+        if (this.received > this.granted) {
+            this.closeReason = "stream_error";
+            this.destroy();
+            return;
+        }
         this.push(payload);
         this.grantCredit();
     }

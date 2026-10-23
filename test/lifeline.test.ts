@@ -7,6 +7,7 @@ import { logger } from "../src/utils/logger.ts";
 import { registerHook, clearHooks } from "../src/utils/hooks.ts";
 import { handleWardenIpc, setWardenClusterIpcSender } from "../src/warden/index.ts";
 import { getLocalLifeline } from "../src/warden/lifeline.ts";
+import { MAX_WS_PAYLOAD } from "../src/ws/index.ts";
 import {
     SpyKV,
     connectRawLifeline,
@@ -182,6 +183,42 @@ test("lifeline: a dead Edge is cut off promptly and lifeline_disconnect reports 
         lifeline.ws.terminate();
     } finally {
         clearHooks();
+        await h.close();
+    }
+});
+
+test("lifeline: a KV failure while accepting closes the lifeline with 1011, the Hub keeps going", async () => {
+    clearHooks();
+    const h = await startTestHub();
+    const spy = new SpyKV(initKV(parseConfig([])));
+    try {
+        const edge = await createEdge(h.baseUrl);
+        setKV(spy);
+        spy.failKey = (key) => key === `edge:${edge.id}:worker`;
+        const failed = await connectRawLifeline(h.port, edge.token);
+        assert.deepEqual(await waitForClose(failed.ws), { code: 1011, reason: "stream_error" });
+        assert.equal(getLocalLifeline(edge.id), undefined);
+
+        // KV back: the Edge's next dial holds
+        spy.failKey = () => false;
+        const lifeline = await connectRawLifeline(h.port, edge.token);
+        await waitFor(() => Boolean(getLocalLifeline(edge.id)));
+        lifeline.ws.close();
+    } finally {
+        await h.close();
+    }
+});
+
+test("lifeline: a WebSocket message over 64 KiB closes the connection with 1009", async () => {
+    clearHooks();
+    const h = await startTestHub();
+    try {
+        const edge = await createEdge(h.baseUrl);
+        const lifeline = await connectRawLifeline(h.port, edge.token);
+        const closed = waitForClose(lifeline.ws);
+        lifeline.ws.send(Buffer.alloc(MAX_WS_PAYLOAD + 1));
+        assert.equal((await closed).code, 1009);
+    } finally {
         await h.close();
     }
 });

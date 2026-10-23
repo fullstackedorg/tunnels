@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { MuxSession, type MuxStream } from "../src/mux/session.ts";
 import { spliceStreams } from "../src/mux/splice.ts";
+import { FRAME_DATA, MAX_DATA_PAYLOAD, STREAM_WINDOW, encodeFrame } from "../src/mux/frames.ts";
 
 // Two ends of an in-memory WebSocket: each send arrives as the other's binary message.
 function wsPair() {
@@ -93,6 +94,25 @@ test("mux: large transfers both ways stay within the window and arrive whole", a
     await done;
     assert.ok(Buffer.concat(chunks).equals(payload));
     stream.destroy();
+});
+
+test("mux: DATA beyond the granted window resets the stream with stream_error", async () => {
+    const { opener, accepted } = sessions();
+    const stream = await opener.openStream();
+    const closed = new Promise((r) => stream.once("close", r));
+    stream.resume();
+    await new Promise((r) => setImmediate(r));
+    const peer = accepted[0];
+
+    // a peer ignoring flow control: one frame past the window, nobody reading on this side
+    const chunk = Buffer.alloc(MAX_DATA_PAYLOAD);
+    for (let sent = 0; sent <= STREAM_WINDOW; sent += chunk.length) {
+        opener.send(encodeFrame(FRAME_DATA, stream.id, chunk));
+    }
+    await closed;
+    assert.equal(stream.peerCloseReason, "stream_error");
+    assert.ok(peer.destroyed);
+    assert.ok(peer.readableLength <= STREAM_WINDOW, "nothing past the window was buffered");
 });
 
 test("mux: spliced sessions deliver a whole response the far side ends with FIN then RESET", async () => {

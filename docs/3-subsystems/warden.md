@@ -37,7 +37,7 @@ When an upgrade presents an edge token without an `x-relay-worker` header:
 
 1. **Resolve**: look the edge up by token through the [entity cache](entity-schemas.md#token-resolution--cache). Unknown token: `401`. Storage or KV unavailable: `503`.
 2. **Gate**: run `lifeline_connect(req, edge)`. `req.deny()` rejects with the hook's status (default `403`); a throw or `HOOK_TIMEOUT` rejects with `500`. Neither puts the Edge in its revoked state.
-3. **Accept** the upgrade and add the lifeline to the heartbeat sweep.
+3. **Accept** the upgrade and add the lifeline to the heartbeat sweep. If KV fails during the steps below (Redis down while reading `edge:<id>:worker`), the error is logged and the lifeline is closed with `1011 stream_error` before it is registered (no `lifeline_disconnect`); the Edge dials again with its backoff. A failed presence write in step 6 is only logged.
 4. **Newest wins**: if this Edge already has a lifeline (on this worker, or on another worker according to `edge:<id>:worker`), the older one is closed with `1000 superseded`. The older lifeline's cleanup never unregisters the newer lifeline or its presence. In clustered mode the new lifeline worker sends `close_lifeline { edgeId, reason: "superseded" }` to the old worker through the Primary.
 5. **Version**: if the `version` header differs from `edge.version`, the stored value is updated (asynchronously). The field is informational and read-only through the REST API.
 6. **Register**: `edgeLifelines.set(edge.id, ws)`, write presence immediately (below), and `SADD worker:<bootId>:<workerId>:edges <edgeId>`.
@@ -127,6 +127,7 @@ Every 5 seconds the worker closes sessions that carried no stream for 30 seconds
 4. **Outcome**:
     - **`OPENED`**: resolves with the relay stream (a `Duplex`), which the Tunnel Handler splices 1:1 to the runtime stream.
     - **`RESET` from the Edge**: fails with the Edge's reason, verbatim. A reason outside the taxonomy, or `client_close`, is reported as `stream_error`, or `edge_disconnected` when the relay session itself closed.
+    - **Relay session closed before `OPENED`**: fails with the reason this side closed it with (`heartbeat_timeout`, `hub_shutdown`, a sever reason), or the Edge's close reason, else `edge_disconnected`. A relay session the Edge drops without a taxonomy reason ends its opened streams with `target_close`, but a stream still waiting for `OPENED` never reached a target, so it reports `edge_disconnected`.
     - **Deadline**: fails with `connect_timeout` and sends `RESET connect_timeout` to the Edge, which drops its dial.
     - **Abort** (`signal`): fails with the abort reason and sends `RESET` with it to the Edge.
 

@@ -5,6 +5,7 @@ import { MAX_STREAMS_PER_RELAY, RELAY_WORKER_HEADER, type Reason } from "../cons
 import { logger } from "../utils/logger.ts";
 import { MuxSession } from "../mux/session.ts";
 import { closeWithReason, registerHeartbeat } from "../ws/heartbeat.ts";
+import { MAX_WS_PAYLOAD } from "../ws/index.ts";
 import { serveEdgeStream } from "./streams.ts";
 
 /** The Edge token: the token file (re-read, so a rolled token is picked up) or --token. */
@@ -36,6 +37,7 @@ function dialOnce(config: AppConfig, worker: string, onClose?: () => void): Prom
         if (!token || !config.hubUrl) return resolve(false);
         const ws = new WebSocket(config.hubUrl, {
             perMessageDeflate: false,
+            maxPayload: MAX_WS_PAYLOAD,
             headers: { Authorization: token, [RELAY_WORKER_HEADER]: worker },
         });
         ws.once("open", () => {
