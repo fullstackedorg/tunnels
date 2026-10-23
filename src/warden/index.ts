@@ -6,8 +6,8 @@ import { isReason, MAX_STREAMS_PER_RELAY, RELAY_WORKER_HEADER, type Reason } fro
 import { logger } from "../utils/logger.ts";
 import { kv } from "../kv/index.ts";
 import { runGatingHook } from "../utils/hooks.ts";
-import { createWebSocketServer } from "../ws/index.ts";
-import { setSeverEdgeListener } from "../tunnels/registry.ts";
+import { closeWithReason, createWebSocketServer, registerHeartbeat } from "../ws/index.ts";
+import { setSeverEdgeListener, severedSince } from "../tunnels/registry.ts";
 import {
     getLocalLifeline,
     sendOpenRelay,
@@ -44,7 +44,11 @@ let clusterIpcSender: ((msg: any, handle?: any) => void) | null = null;
 export function configureWarden(options: { heartbeatTimeout: number }) {
     setPresenceHeartbeatTimeout(options.heartbeatTimeout);
     configureRelays({ request: routeRelayRequest, keepWarm: (id) => !!getLocalLifeline(id) });
-    setSeverEdgeListener((edgeId, reason) => closeRelays(edgeId, reason));
+    // severing an Edge closes its lifeline and relay sessions on every worker
+    setSeverEdgeListener((edgeId, reason) => {
+        closeRelays(edgeId, reason);
+        closeLifelineLocally(edgeId, reason);
+    });
 }
 
 /** Hub shutdown: close lifelines (streams waiting for a relay session fail). */
@@ -176,8 +180,21 @@ export async function openRelayedStream(
     return stream;
 }
 
-function acceptRelaySession(edgeId: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
+function acceptRelaySession(
+    edgeId: string,
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    resolvedAt?: number
+) {
     createWebSocketServer().handleUpgrade(req, socket, head, (ws) => {
+        // the Edge was severed while this relay session was set up
+        const severed = severedSince(resolvedAt, { edgeId });
+        if (severed) {
+            registerHeartbeat(ws);
+            closeWithReason(ws, severed);
+            return;
+        }
         registerRelay(edgeId, ws);
         logger.info("Warden", `Relay session of edge ${edgeId} up (${liveRelays(edgeId).length})`);
     });
@@ -196,12 +213,19 @@ export async function wardenRelaySession(
     const target = req.headers[RELAY_WORKER_HEADER];
     if (typeof target === "string" && target !== logger.getWorkerIdentity() && clusterIpcSender) {
         clusterIpcSender(
-            { type: "relay_session_socket", target, edgeId: edge.id, head, headers: req.headers },
+            {
+                type: "relay_session_socket",
+                target,
+                edgeId: edge.id,
+                head,
+                headers: req.headers,
+                resolvedAt: req.resolvedAt,
+            },
             socket
         );
         return;
     }
-    acceptRelaySession(edge.id, req, socket, head);
+    acceptRelaySession(edge.id, req, socket, head, req.resolvedAt);
 }
 
 export function handleWardenIpc(msg: any, handle?: any): void {
@@ -230,7 +254,8 @@ export function handleWardenIpc(msg: any, handle?: any): void {
             msg.edgeId,
             reqAdapter as unknown as IncomingMessage,
             handle,
-            Buffer.from(msg.head)
+            Buffer.from(msg.head),
+            msg.resolvedAt
         );
     } else if (msg.type === "close_lifeline") {
         closeLifelineLocally(msg.edgeId, msg.reason);

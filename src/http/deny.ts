@@ -12,6 +12,8 @@ export interface IncomingMessageWithDeny extends IncomingMessage {
     id: string;
     clientIp: string;
     correlationId?: string;
+    /** When the upgrade's token started resolving (ms since epoch), see severedSince. */
+    resolvedAt?: number;
     denied: boolean;
     denyReason?: string;
     deny(

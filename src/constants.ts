@@ -98,6 +98,7 @@ export const DEFAULT_DRAIN_TIMEOUT = 30;
 export const DEFAULT_REVOKED_POLL_INTERVAL = 300;
 export const DEFAULT_ENTITY_CACHE_TTL = 60;
 export const DEFAULT_NEGATIVE_CACHE_TTL = 5;
+export const DEFAULT_POSTGRES_POOL_SIZE = 10;
 export const DEFAULT_DATA_DIR = "data";
 export const DEFAULT_WORKERS = 1;
 export const DEFAULT_RECONNECT_INTERVAL = 1;

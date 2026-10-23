@@ -5,6 +5,7 @@ import {
     FRAME_OPENED,
     FRAME_RESET,
     MAX_DATA_PAYLOAD,
+    PRE_OPEN_WINDOW,
     STREAM_WINDOW,
     encodeFrame,
     encodeWindow,
@@ -22,7 +23,7 @@ export interface StreamTransport {
 /**
  * One multiplexed stream as a Node Duplex: writes become DATA frames within the peer's credit,
  * received bytes are pushed and credit is returned as the consumer reads them (bytes beyond the
- * credit granted RESET the stream with stream_error). `end()` sends FIN;
+ * credit granted, PRE_OPEN_WINDOW before OPENED, RESET the stream with stream_error). `end()` sends FIN;
  * `destroy()` before both FINs sends RESET with `closeReason` (or stream_error / client_close).
  */
 export class MuxStream extends Duplex {
@@ -33,10 +34,12 @@ export class MuxStream extends Duplex {
     peerCloseReason?: string;
 
     private readonly transport: StreamTransport;
-    private sendCredit = STREAM_WINDOW;
+    // PRE_OPEN_WINDOW each way until OPENED (see frames.ts)
+    private sendCredit = PRE_OPEN_WINDOW;
     private creditWaiters: (() => void)[] = [];
     private received = 0;
-    private granted = STREAM_WINDOW;
+    private granted = PRE_OPEN_WINDOW;
+    private established = false;
     private finSent = false;
     private finReceived = false;
     private resetDone = false;
@@ -47,15 +50,31 @@ export class MuxStream extends Duplex {
         this.id = id;
     }
 
-    /** Hub side: the target is dialed. */
+    /** Accepting side: the target is dialed. */
     opened(): void {
         this.transport.send(encodeFrame(FRAME_OPENED, this.id));
+        this.establish();
+    }
+
+    /** Opening side: the peer answered OPENED. */
+    handleOpened(): void {
+        this.establish();
+    }
+
+    // OPENED grants the rest of STREAM_WINDOW both ways.
+    private establish(): void {
+        if (this.established) return;
+        this.established = true;
+        this.granted += STREAM_WINDOW - PRE_OPEN_WINDOW;
+        this.handleWindow(STREAM_WINDOW - PRE_OPEN_WINDOW);
+        this.grantCredit();
     }
 
     handleData(payload: Buffer): void {
         if (this.destroyed || this.finReceived) return;
         this.received += payload.length;
-        // a peer sending past the credit it was granted would grow the buffer without bound
+        // a peer sending past the credit it was granted (PRE_OPEN_WINDOW before OPENED) would
+        // grow the buffer without bound
         if (this.received > this.granted) {
             this.closeReason = "stream_error";
             this.destroy();
@@ -109,7 +128,7 @@ export class MuxStream extends Duplex {
 
     // Keep the peer's window at STREAM_WINDOW beyond what the consumer has read.
     private grantCredit(): void {
-        if (this.destroyed || this.finReceived) return;
+        if (this.destroyed || this.finReceived || !this.established) return;
         const consumed = this.received - this.readableLength;
         const target = consumed + STREAM_WINDOW;
         if (target - this.granted >= STREAM_WINDOW / 2 && this.transport.open) {

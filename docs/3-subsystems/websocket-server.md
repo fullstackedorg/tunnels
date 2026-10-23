@@ -31,7 +31,7 @@ A `MuxSession` (`src/mux/`) wraps one WebSocket and carries many streams; either
 
 | Stream side           | Frames                       | Behavior                                                                                                                                   |
 | :-------------------- | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- |
-| `stream.write(chunk)` | `DATA` (at most 32 KiB each) | Waits for the peer's credit (`WINDOW`) and for the WebSocket buffer to drain below 1 MiB.                                                  |
+| `stream.write(chunk)` | `DATA` (at most 32 KiB each) | Waits for the peer's credit (32 KiB until `OPENED`, then `WINDOW`) and for the WebSocket buffer to drain below 1 MiB.                      |
 | `data` event          | `DATA` received              | Credit is returned to the peer (`WINDOW`) as the consumer reads; bytes beyond the credit granted end the stream with `RESET stream_error`. |
 | `stream.end()`        | `FIN`                        | The sender has no more bytes.                                                                                                              |
 | `stream.destroy()`    | `RESET`                      | Carries `stream.closeReason` (or `stream_error` / `client_close`); the peer's reason is in `peerCloseReason`.                              |

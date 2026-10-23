@@ -9,6 +9,30 @@ import type {
     WhereCondition,
 } from "./interface.ts";
 import { edgeTable, tunnelTable } from "../entities/schema.ts";
+import { DEFAULT_POSTGRES_POOL_SIZE } from "../constants.ts";
+import { logger } from "../utils/logger.ts";
+
+/** How long a query waits for a pooled connection (or a new one to open) before it fails. */
+export const POSTGRES_CONNECT_TIMEOUT_MS = 5000;
+
+/**
+ * The pool for POSTGRES_URL. A pooled client that drops while idle (PostgreSQL restart,
+ * failover) is discarded and logged: unheard, its "error" event would end the process.
+ */
+export function createPostgresPool(
+    connectionString: string,
+    max = DEFAULT_POSTGRES_POOL_SIZE
+): pg.Pool {
+    const pool = new pg.Pool({
+        connectionString,
+        max,
+        connectionTimeoutMillis: POSTGRES_CONNECT_TIMEOUT_MS,
+    });
+    pool.on("error", (err) => {
+        logger.error("Storage", "PostgreSQL client dropped", { error: err });
+    });
+    return pool;
+}
 
 export class PostgreSQLStorageProvider implements StorageProvider {
     private pool: pg.Pool;
@@ -16,7 +40,7 @@ export class PostgreSQLStorageProvider implements StorageProvider {
 
     constructor(connectionStringOrPool: string | pg.Pool, dbInstance?: NodePgDatabase) {
         if (typeof connectionStringOrPool === "string") {
-            this.pool = new pg.Pool({ connectionString: connectionStringOrPool });
+            this.pool = createPostgresPool(connectionStringOrPool);
             this.db = drizzle(this.pool);
         } else {
             this.pool = connectionStringOrPool;

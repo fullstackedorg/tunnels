@@ -9,6 +9,7 @@ import {
     DEFAULT_DRAIN_TIMEOUT,
     DEFAULT_REVOKED_POLL_INTERVAL,
     DEFAULT_ENTITY_CACHE_TTL,
+    DEFAULT_POSTGRES_POOL_SIZE,
     DEFAULT_NEGATIVE_CACHE_TTL,
     DEFAULT_DATA_DIR,
     DEFAULT_WORKERS,
@@ -32,6 +33,7 @@ export interface AppConfig {
     port: number;
     host: string;
     postgresUrl?: string;
+    postgresPoolSize: number;
     redisUrl?: string;
     dataDir: string;
     allowFsMultiworker: boolean;
@@ -179,6 +181,14 @@ export function parseConfig(
         port: getVal(["port", "p"], ["PORT"], cli, env, Number, DEFAULT_PORT),
         host: getVal(["host"], ["HOST"], cli, env, String, DEFAULT_HOST),
         postgresUrl: getVal(["postgres-url"], ["POSTGRES_URL"], cli, env, String, undefined),
+        postgresPoolSize: getVal(
+            ["postgres-pool-size"],
+            ["POSTGRES_POOL_SIZE"],
+            cli,
+            env,
+            Number,
+            DEFAULT_POSTGRES_POOL_SIZE
+        ),
         redisUrl: getVal(["redis-url"], ["REDIS_URL"], cli, env, String, undefined),
         dataDir: getVal(["data-dir", "d"], ["DATA_DIR"], cli, env, String, DEFAULT_DATA_DIR),
         allowFsMultiworker: getVal(
@@ -274,6 +284,8 @@ function validateConfig(config: AppConfig, env: Record<string, string | undefine
                 "Startup error: Edge mode requires either --token / TOKEN or --token-file / TOKEN_FILE."
             );
         }
+    } else if (!Number.isInteger(config.postgresPoolSize) || config.postgresPoolSize < 1) {
+        throw new Error("Startup error: POSTGRES_POOL_SIZE must be a positive integer.");
     } else if (config.workers > 1) {
         const hasDbAndCache = Boolean(config.postgresUrl && config.redisUrl);
         if (!hasDbAndCache && !config.allowFsMultiworker) {

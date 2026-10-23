@@ -1,7 +1,7 @@
 import type { AppConfig } from "../utils/config.ts";
 import type { StorageProvider } from "./interface.ts";
 import { FilesystemStorageProvider } from "./filesystem.ts";
-import { PostgreSQLStorageProvider } from "./postgresql.ts";
+import { PostgreSQLStorageProvider, createPostgresPool } from "./postgresql.ts";
 
 export type {
     EntityName,
@@ -16,7 +16,9 @@ let activeStorage: StorageProvider | null = null;
 
 export async function createStorageProvider(config: AppConfig): Promise<StorageProvider> {
     if (config.postgresUrl) {
-        const pgProvider = new PostgreSQLStorageProvider(config.postgresUrl);
+        const pgProvider = new PostgreSQLStorageProvider(
+            createPostgresPool(config.postgresUrl, config.postgresPoolSize)
+        );
         await pgProvider.init();
         return pgProvider;
     }

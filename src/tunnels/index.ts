@@ -9,7 +9,7 @@ import { logger } from "../utils/logger.ts";
 import { createWebSocketServer } from "../ws/index.ts";
 import { closeWithReason, getLocalCloseReason, registerHeartbeat } from "../ws/heartbeat.ts";
 import { MuxSession, type MuxStream } from "../mux/session.ts";
-import { registerSession, unregisterSession } from "./registry.ts";
+import { registerSession, severedSince, unregisterSession } from "./registry.ts";
 import { connectDirectTarget } from "./direct.ts";
 import { spliceTunnelStreams } from "./splicing.ts";
 import { openRelayedStream, isEdgeOnline } from "../warden/index.ts";
@@ -54,6 +54,12 @@ export async function handleTunnelUpgrade(
 
 function runMuxSession(req: IncomingMessageWithDeny, ws: WebSocket, tunnel: Tunnel): void {
     registerHeartbeat(ws);
+    // the tunnel or its Edge was severed while this upgrade was set up from its old state
+    const severed = severedSince(req.resolvedAt, { tunnelId: tunnel.id, edgeId: tunnel.edgeId });
+    if (severed) {
+        closeWithReason(ws, severed);
+        return;
+    }
     const sessionId = crypto.randomUUID();
 
     const session = new MuxSession(ws, {

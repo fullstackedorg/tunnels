@@ -13,8 +13,13 @@ export const FRAME_RESET = 6; // abort the stream; payload: reason (utf-8)
 
 export const HEADER_SIZE = 5;
 
-/** Initial send credit of a stream in each direction, renewed by WINDOW frames. */
+/**
+ * Send credit of a stream in each direction once OPENED is exchanged, renewed by WINDOW frames.
+ * Before OPENED a stream's credit is only PRE_OPEN_WINDOW (early data, held until the target is
+ * dialed); OPENED itself grants the rest, with no WINDOW frame.
+ */
 export const STREAM_WINDOW = 256 * 1024;
+export const PRE_OPEN_WINDOW = 32 * 1024;
 
 /** Largest DATA payload: big writes go out in several frames so streams interleave. */
 export const MAX_DATA_PAYLOAD = 32 * 1024;

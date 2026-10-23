@@ -212,6 +212,8 @@ Sessions owned by the dead worker end when their sockets close, and so do the re
 3. All sessions relayed through that Edge are closed with the same reason (via `sever_sessions`), and every worker closes the Edge's relay sessions with it; streams waiting for one fail with it too.
 4. The Edge enters its [revoked state](../2-nodes/edge.md#revocation-handling). Further attempts with the old token get `401`.
 
+The `sever_sessions` broadcast of step 3 also closes the Edge's lifeline on every worker, and every worker remembers it: a lifeline or relay session whose edge token resolved before the sever and that is accepted after it (its `lifeline_connect` hook was still running, say) is closed with the same reason, once registered for a lifeline (`lifeline_disconnect` fires) and before registering for a relay session. See [Sever memory](tunnel-handlers.md#session-registry).
+
 On Hub shutdown, lifelines are closed with `1001 hub_shutdown` (streams still waiting for a relay session fail with `hub_shutdown`); relay sessions stay up while runtime sessions drain, then are closed with `1001 hub_shutdown`. Edges reconnect with backoff.
 
 ---

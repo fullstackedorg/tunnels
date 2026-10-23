@@ -4,7 +4,13 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { MuxSession, type MuxStream } from "../src/mux/session.ts";
 import { spliceStreams } from "../src/mux/splice.ts";
-import { FRAME_DATA, MAX_DATA_PAYLOAD, STREAM_WINDOW, encodeFrame } from "../src/mux/frames.ts";
+import {
+    FRAME_DATA,
+    MAX_DATA_PAYLOAD,
+    PRE_OPEN_WINDOW,
+    STREAM_WINDOW,
+    encodeFrame,
+} from "../src/mux/frames.ts";
 
 // Two ends of an in-memory WebSocket: each send arrives as the other's binary message.
 function wsPair() {
@@ -113,6 +119,47 @@ test("mux: DATA beyond the granted window resets the stream with stream_error", 
     assert.equal(stream.peerCloseReason, "stream_error");
     assert.ok(peer.destroyed);
     assert.ok(peer.readableLength <= STREAM_WINDOW, "nothing past the window was buffered");
+});
+
+test("mux: before OPENED a stream carries at most PRE_OPEN_WINDOW, the rest follows OPENED", async () => {
+    const [a, b] = wsPair();
+    const accepted: MuxStream[] = [];
+    const opener = new MuxSession(a);
+    new MuxSession(b, { onOpen: (stream) => accepted.push(stream) });
+
+    const { stream, ready } = opener.startStream();
+    const payload = crypto.randomBytes(100 * 1024);
+    stream.write(payload);
+    await new Promise((r) => setTimeout(r, 20));
+    const peer = accepted[0];
+    assert.equal(peer.readableLength, PRE_OPEN_WINDOW, "early data stops at the window");
+
+    // the target is dialed: OPENED grants the rest
+    const received = readAll(peer);
+    peer.opened();
+    await ready;
+    stream.end();
+    peer.once("end", () => peer.end());
+    assert.ok((await received).equals(payload));
+});
+
+test("mux: DATA beyond PRE_OPEN_WINDOW before OPENED resets the stream with stream_error", async () => {
+    const [a, b] = wsPair();
+    const accepted: MuxStream[] = [];
+    const opener = new MuxSession(a);
+    new MuxSession(b, { onOpen: (stream) => accepted.push(stream) });
+
+    const { stream } = opener.startStream();
+    const closed = new Promise((r) => stream.once("close", r));
+    stream.resume();
+    // a peer ignoring the pre-OPENED window: one frame more than it allows
+    const chunk = Buffer.alloc(MAX_DATA_PAYLOAD);
+    for (let sent = 0; sent <= PRE_OPEN_WINDOW; sent += chunk.length) {
+        opener.send(encodeFrame(FRAME_DATA, stream.id, chunk));
+    }
+    await closed;
+    assert.equal(stream.peerCloseReason, "stream_error");
+    assert.ok(accepted[0].destroyed);
 });
 
 test("mux: spliced sessions deliver a whole response the far side ends with FIN then RESET", async () => {

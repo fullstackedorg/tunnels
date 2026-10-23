@@ -113,3 +113,11 @@ test("config: ALLOW_FILESYSTEM_MULTIWORKER notices follow the Test Mode rules", 
 
     assert.deepEqual(configNotices(parseConfig([], {}), {}), []);
 });
+
+test("config: POSTGRES_POOL_SIZE sets the pool size, a positive integer", () => {
+    assert.equal(parseConfig([], {}).postgresPoolSize, 10);
+    assert.equal(parseConfig([], { POSTGRES_POOL_SIZE: "20" }).postgresPoolSize, 20);
+    assert.equal(parseConfig(["--postgres-pool-size", "3"], {}).postgresPoolSize, 3);
+    assert.throws(() => parseConfig([], { POSTGRES_POOL_SIZE: "0" }), /POSTGRES_POOL_SIZE/);
+    assert.throws(() => parseConfig([], { POSTGRES_POOL_SIZE: "many" }), /POSTGRES_POOL_SIZE/);
+});

@@ -105,6 +105,7 @@ Used when `WORKERS > 1`, `POSTGRES_URL` is not set, and `ALLOW_FILESYSTEM_MULTIW
 
 - **Activated** by `POSTGRES_URL`. Required when `WORKERS > 1`, except in [test mode](../2-nodes/configuration.md#test-mode-multi-worker-without-postgresql-or-redis).
 - **Engine**: `pg.Pool` with Drizzle ORM; `transaction()` maps to a database transaction.
+- **Pool**: at most `POSTGRES_POOL_SIZE` connections (default 10, see [Configuration](../2-nodes/configuration.md#hub-settings)); a query waits at most 5 s (`POSTGRES_CONNECT_TIMEOUT_MS`) for a connection, then fails. A pooled connection that drops while idle (PostgreSQL restart, failover) is discarded and logged (`error`, category `Storage`), and the next query opens a new one; the Hub keeps running.
 - **Schema**: managed manually with Drizzle Kit (`npx drizzle-kit push --config drizzle.config.ts`, with `POSTGRES_URL` set, from a checkout with dev dependencies). At startup the provider runs `SELECT 1` and checks that the `edge` and `tunnel` tables exist; otherwise the Hub exits with an error naming that command. See [Hub](../2-nodes/hub.md#schema-initialization).
 - **Cascade**: `tunnel.edgeId` references `edge.id` with `ON DELETE CASCADE`.
 - **Indexing for tenancy**: when scoping by a metadata key, add an expression index, e.g. `CREATE INDEX idx_tunnel_user ON tunnel ((metadata->>'userId'));`.

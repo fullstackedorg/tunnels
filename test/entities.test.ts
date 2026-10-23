@@ -120,6 +120,28 @@ test("entities: token resolution caches positive result and negative tombstones"
     }
 });
 
+test("entities: a resolve that read storage before a roll never caches the old token", async () => {
+    const testKv = new MemoryKVProvider();
+    setKV(testKv);
+    const old: any = { id: "t-race", token: "tun_race_old", name: "n", edgeId: null };
+    // storage answers with the entity as it was, and the roll completes before the answer lands
+    setStorage({
+        getByToken: async () => {
+            await cacheRollToken("tunnel", { ...old, token: "tun_race_new" }, old.token);
+            return old;
+        },
+    } as any);
+    try {
+        assert.equal(await resolveToken(old.token), null);
+        // nothing left to resolve the old token once the tombstone expires
+        assert.equal(await testKv.get(`entity:tunnel:${old.token}`), null);
+    } finally {
+        await testKv.close();
+        setStorage(null);
+        setKV(null);
+    }
+});
+
 test("entities: ENTITY_CACHE_TTL and NEGATIVE_CACHE_TTL are applied to the token cache", async () => {
     const h = await startTestHub(["--entity-cache-ttl", "9", "--negative-cache-ttl", "2"]);
     const spy = new SpyKV(initKV(parseConfig([])));

@@ -14,7 +14,9 @@ flowchart TD
         Miss -->|"no"| Hit{"entity:<table>:<token>?"}
         Hit -->|"hit"| Return["Return entity"]
         Hit -->|"no"| DB["Storage lookup"]
-        DB -->|"found"| SetNX["SET NX entity:<table>:<token>\nTTL ENTITY_CACHE_TTL"] --> Return
+        DB -->|"found"| SetNX["SET NX entity:<table>:<token>\nTTL ENTITY_CACHE_TTL"] --> Recheck{"entity:miss:<token>\nwritten meanwhile?"}
+        Recheck -->|"no"| Return
+        Recheck -->|"yes"| Evict["DEL entity:<table>:<token>"] --> NotFound
         DB -->|"not found"| SetMiss["SET entity:miss:<token>\nTTL NEGATIVE_CACHE_TTL"] --> NotFound
         DB -->|"storage error"| Unavail["503"]
     end
@@ -88,7 +90,7 @@ Handshakes resolve tokens through the KV store to avoid a storage query per conn
 | `entity:miss:<token>`                           | `1`         | `NEGATIVE_CACHE_TTL` (default 5s) |
 
 - Both keys are read in one round trip (`MGET entity:miss:<token> entity:<table>:<token>`); a tombstone wins over a positive entry.
-- Positive entries are written with `SET NX` on read-through and updated directly on mutation.
+- Positive entries are written with `SET NX` on read-through and updated directly on mutation. After its `SET NX`, a read-through checks the tombstone again: a roll or deletion committed after its storage read has written `entity:miss:<token>` by then (tombstone before eviction, below), so the entry it may have cached after the eviction is deleted and the token is not found. Without this, that entry would outlive the 5 s tombstone and resolve the revoked token for up to `ENTITY_CACHE_TTL`.
 - Negative entries stop repeated invalid tokens from reaching storage on every attempt.
 - If storage or KV is unavailable, resolution fails with `503`, never `401`.
 
@@ -99,11 +101,11 @@ Every mutation follows the same deterministic order:
 1. Commit the change in storage.
 2. Update the cache:
     - For updates: write the updated entity directly to KV (`kv.set("entity:<table>:<token>", entity, ENTITY_CACHE_TTL)`).
-    - For token rolls: write the new entity to KV, delete the old cache key, and write `entity:miss:<oldToken>` with `NEGATIVE_CACHE_TTL`.
-    - For deletions: delete `entity:<table>:<token>` and write `entity:miss:<token>`.
+    - For token rolls: write the new entity to KV, write `entity:miss:<oldToken>` with `NEGATIVE_CACHE_TTL`, then delete the old cache key.
+    - For deletions: write `entity:miss:<token>`, then delete `entity:<table>:<token>`.
 3. Sever affected sessions (see [Session Registry](tunnel-handlers.md#session-registry)).
 
-Because mutations write-through directly to KV with negative tombstones for revoked tokens, cache consistency is immediate and deterministic without relying on delayed deletion timers. Existing sessions never depend on the cache: step 3 closes them.
+Because mutations write-through directly to KV with negative tombstones for revoked tokens, cache consistency is immediate and deterministic without relying on delayed deletion timers. Existing sessions never depend on the cache: step 3 closes them, and a session whose token resolved before step 3 but that registers after it is closed by the [sever memory](tunnel-handlers.md#session-registry).
 
 ## Hooks
 

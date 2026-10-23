@@ -57,8 +57,14 @@ export async function resolveToken(token: string): Promise<ResolveTokenResult | 
             return null;
         }
 
-        // 4. Populate positive cache
+        // 4. Populate positive cache, unless the token was revoked meanwhile: a roll or delete
+        // committed after the storage read writes its tombstone before evicting, so an entry
+        // cached after the eviction is seen here and removed (it would outlive the tombstone)
         await kv.setNX(`entity:${entityType}:${token}`, item, entityCacheTtl);
+        if ((await kv.get(`entity:miss:${token}`)) !== null) {
+            await kv.del(`entity:${entityType}:${token}`);
+            return null;
+        }
 
         return { type: entityType, entity: item as any };
     } catch (err) {
@@ -87,8 +93,9 @@ export async function cacheRollToken(
 ): Promise<void> {
     try {
         await kv.set(`entity:${entityType}:${entity.token}`, entity, entityCacheTtl);
-        await kv.del(`entity:${entityType}:${oldToken}`);
+        // tombstone first, then evict (see resolveToken)
         await kv.set(`entity:miss:${oldToken}`, 1, negativeCacheTtl);
+        await kv.del(`entity:${entityType}:${oldToken}`);
     } catch {
         // fail-open
     }
@@ -96,8 +103,9 @@ export async function cacheRollToken(
 
 export async function cacheDeleteEntity(entityType: EntityName, token: string): Promise<void> {
     try {
-        await kv.del(`entity:${entityType}:${token}`);
+        // tombstone first, then evict (see resolveToken)
         await kv.set(`entity:miss:${token}`, 1, negativeCacheTtl);
+        await kv.del(`entity:${entityType}:${token}`);
     } catch {
         // fail-open
     }

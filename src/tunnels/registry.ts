@@ -37,11 +37,46 @@ export function setSeverEdgeListener(fn: ((edgeId: string, reason: Reason) => vo
     severEdgeListener = fn;
 }
 
+/**
+ * Severs are remembered for SEVER_MEMORY_MS: a session whose token resolved before a sever (the
+ * old entity) and that registers after it is closed with the same reason. Longer than any
+ * upgrade takes to set up (token resolution, gating hooks); one older than that is refused.
+ */
+export const SEVER_MEMORY_MS = 5 * 60_000;
+const recentSevers = new Map<string, { at: number; reason: Reason }>();
+
+function rememberSever(filter: { tunnelId?: string; edgeId?: string }, reason: Reason): void {
+    const now = Date.now();
+    for (const [key, sever] of recentSevers) {
+        if (now - sever.at > SEVER_MEMORY_MS) recentSevers.delete(key);
+    }
+    if (filter.tunnelId) recentSevers.set(`tunnel:${filter.tunnelId}`, { at: now, reason });
+    if (filter.edgeId) recentSevers.set(`edge:${filter.edgeId}`, { at: now, reason });
+}
+
+/**
+ * The reason a session set up from a token resolved at `resolvedAt` (ms since epoch, comparable
+ * across workers) must close with: a sever of its tunnel or Edge since then, else null.
+ */
+export function severedSince(
+    resolvedAt: number | undefined,
+    ids: { tunnelId?: string; edgeId?: string | null }
+): Reason | null {
+    if (resolvedAt === undefined) return null;
+    if (Date.now() - resolvedAt > SEVER_MEMORY_MS) return "stream_error";
+    for (const key of [`tunnel:${ids.tunnelId}`, `edge:${ids.edgeId}`]) {
+        const sever = recentSevers.get(key);
+        if (sever && sever.at >= resolvedAt) return sever.reason;
+    }
+    return null;
+}
+
 export function severLocalSessions(
     filter: { tunnelId?: string; edgeId?: string },
     reason: Reason = "token_rolled"
 ): number {
     let severed = 0;
+    rememberSever(filter, reason);
     const code = CLOSE_CODES[reason] ?? 1000;
     if (filter.edgeId && !filter.tunnelId) severEdgeListener?.(filter.edgeId, reason);
 

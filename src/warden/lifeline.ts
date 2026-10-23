@@ -8,6 +8,7 @@ import { logger } from "../utils/logger.ts";
 import { runGatingHook, dispatchTelemetry } from "../utils/hooks.ts";
 import { closeWithReason, getLocalCloseReason, registerHeartbeat } from "../ws/heartbeat.ts";
 import { createWebSocketServer } from "../ws/index.ts";
+import { severedSince } from "../tunnels/registry.ts";
 import { liveRelays, relayRequestFailed, requestRelay } from "./relays.ts";
 import type { OpenRelayOrder } from "./types.ts";
 import { DEFAULT_HEARTBEAT_TIMEOUT } from "../constants.ts";
@@ -183,6 +184,9 @@ async function acceptLifeline(req: IncomingMessageWithDeny, ws: WebSocket, edge:
             logger.warn("Warden", `Lifeline cleanup failed: ${err?.message}`);
         });
     });
+    // 7. The Edge was severed (token rolled, deleted) while this lifeline was set up
+    const severed = severedSince(req.resolvedAt, { edgeId: edge.id });
+    if (severed) closeWithReason(ws, severed);
 }
 
 async function onLifelineClosed(edge: Edge, ws: WebSocket, workerId: string, reason: Reason) {

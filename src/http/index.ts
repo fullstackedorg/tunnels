@@ -97,6 +97,7 @@ async function handleUpgrade(
 
     if (token.startsWith("edg_")) {
         let resolved;
+        req.resolvedAt = Date.now();
         try {
             resolved = await resolveToken(token);
         } catch {
@@ -118,6 +119,7 @@ async function handleUpgrade(
 
     if (token.startsWith("tun_")) {
         let resolved;
+        req.resolvedAt = Date.now();
         try {
             resolved = await resolveToken(token);
         } catch {

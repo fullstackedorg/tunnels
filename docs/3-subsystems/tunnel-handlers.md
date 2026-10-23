@@ -71,6 +71,8 @@ Each worker keeps an in-memory index of its active tunnel sessions by `tunnelId`
 
 The REST API applies the change in storage first, evicts caches, and then broadcasts `sever_sessions { tunnelId | edgeId, reason }`. In clustered mode the broadcast goes through the Primary to every worker. Changes to `name` or `metadata` do not close sessions.
 
+**Sever memory**: an upgrade resolves its token, then runs its gating hooks, then registers its session; a sever that runs in between would miss it, and the session would live on with the old entity. So every worker remembers each sever (tunnel id or Edge id, reason, time) for `SEVER_MEMORY_MS` (5 minutes), and the upgrade records when its token started resolving (`req.resolvedAt`, wall-clock, comparable across workers). A tunnel session whose tunnel or Edge was severed since then is closed at once with that sever's reason, before it registers; so is a lifeline or relay session whose Edge was (see [Warden](warden.md#edge-token-roll-and-deletion)). An upgrade that took longer than `SEVER_MEMORY_MS` to set up cannot be checked and is closed with `stream_error`. A sever of an Edge on a worker also closes its lifeline and relay sessions there.
+
 ### Programmatic Session Severing API
 
 In addition to REST-triggered mutations, the Hub exports a programmatic API allowing plugins, background subscribers, or custom event handlers (such as external revocation webhooks or message queue listeners) to immediately terminate active sessions matching a filter:

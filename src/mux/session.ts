@@ -140,6 +140,7 @@ export class MuxSession implements StreamTransport {
         const waiter = this.pending.get(id);
         if (type === FRAME_OPENED) {
             this.pending.delete(id);
+            stream?.handleOpened();
             waiter?.resolve();
             return;
         }

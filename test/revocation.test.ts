@@ -2,7 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { startHub, type HubInstance } from "../src/hub/index.ts";
 import { parseConfig } from "../src/utils/config.ts";
-import { severSessions, registerSession, severLocalSessions } from "../src/tunnels/registry.ts";
+import {
+    severSessions,
+    registerSession,
+    severLocalSessions,
+    severedSince,
+    SEVER_MEMORY_MS,
+} from "../src/tunnels/registry.ts";
+import { registerHook, clearHooks } from "../src/utils/hooks.ts";
 import {
     getAvailablePort,
     createTempDir,
@@ -10,8 +17,14 @@ import {
     createTestEchoServer,
     connectTestWs,
     jsonFetch,
+    connectRawLifeline,
+    createEdge,
+    createTunnel,
+    startTestHub,
+    waitFor,
+    waitForClose,
 } from "./helpers.ts";
-import { connectTunnelClient } from "./mux-client.ts";
+import { connectTunnelClient, tunnelClient } from "./mux-client.ts";
 
 test("revocation: rolling tunnel token severs active session with 1000 token_rolled", async () => {
     const echo = await createTestEchoServer();
@@ -289,4 +302,79 @@ test("revocation: severLocalSessions requires both tunnelId and edgeId to match 
     // Clean up remaining
     severLocalSessions({ tunnelId: "tun_A" });
     severLocalSessions({ tunnelId: "tun_B" });
+});
+
+test("revocation: severs are remembered for sessions set up from the entity before them", () => {
+    const before = Date.now() - 10;
+    severLocalSessions({ tunnelId: "t-mem" }, "tunnel_deleted");
+    severLocalSessions({ edgeId: "e-mem" }, "edge_deleted");
+    assert.equal(severedSince(before, { tunnelId: "t-mem" }), "tunnel_deleted");
+    assert.equal(severedSince(before, { tunnelId: "t-other", edgeId: "e-mem" }), "edge_deleted");
+    assert.equal(severedSince(Date.now() + 10, { tunnelId: "t-mem" }), null, "resolved after");
+    assert.equal(severedSince(undefined, { tunnelId: "t-mem" }), null);
+    // too old to be checked against what is remembered
+    assert.equal(severedSince(Date.now() - SEVER_MEMORY_MS - 1000, {}), "stream_error");
+});
+
+// Holds a gating hook until released, so a revocation lands while an upgrade is being set up.
+function holdHook(name: string) {
+    let entered!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((r) => (entered = r));
+    const released = new Promise<void>((r) => (release = r));
+    registerHook(name, async () => {
+        entered();
+        await released;
+    });
+    return { reached, release };
+}
+
+test("revocation: a tunnel session set up across a token roll closes with token_rolled", async () => {
+    clearHooks();
+    const h = await startTestHub();
+    try {
+        const tunnel = await createTunnel(h.baseUrl, {
+            internalHost: "127.0.0.1",
+            internalPort: 9,
+        });
+        const hook = holdHook("tunnel_request");
+        // the old token resolved, then the roll and its sever run before the session registers
+        const client = tunnelClient(`ws://127.0.0.1:${h.port}/`, {
+            headers: { Authorization: tunnel.token },
+        });
+        await hook.reached;
+        const roll = await jsonFetch(`${h.baseUrl}/tunnels/${tunnel.id}/roll-token`, {
+            method: "POST",
+        });
+        assert.equal(roll.status, 200);
+        hook.release();
+        assert.deepEqual(await waitForClose(client), { code: 1000, reason: "token_rolled" });
+    } finally {
+        clearHooks();
+        await h.close();
+    }
+});
+
+test("revocation: a lifeline set up across an edge token roll closes with token_rolled", async () => {
+    clearHooks();
+    const h = await startTestHub();
+    try {
+        const edge = await createEdge(h.baseUrl);
+        const hook = holdHook("lifeline_connect");
+        const connecting = connectRawLifeline(h.port, edge.token);
+        await hook.reached;
+        const roll = await jsonFetch(`${h.baseUrl}/edges/${edge.id}/roll-token`, {
+            method: "POST",
+        });
+        assert.equal(roll.status, 200);
+        hook.release();
+        const lifeline = await connecting;
+        assert.deepEqual(await waitForClose(lifeline.ws), { code: 1000, reason: "token_rolled" });
+        await waitFor(
+            async () => (await jsonFetch(`${h.baseUrl}/edges/${edge.id}`)).data.connected === false
+        );
+    } finally {
+        clearHooks();
+        await h.close();
+    }
 });

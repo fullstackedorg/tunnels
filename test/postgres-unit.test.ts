@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PostgreSQLStorageProvider } from "../src/storage/postgresql.ts";
+import {
+    POSTGRES_CONNECT_TIMEOUT_MS,
+    PostgreSQLStorageProvider,
+    createPostgresPool,
+} from "../src/storage/postgresql.ts";
 import { createStorageProvider } from "../src/storage/index.ts";
 import { edgeTable, tunnelTable } from "../src/entities/schema.ts";
 import type { WhereCondition } from "../src/storage/interface.ts";
@@ -373,5 +377,18 @@ test("postgresql: transaction, close, and string constructor instantiation", asy
         await sp.close();
     } finally {
         PostgreSQLStorageProvider.prototype.init = origInit;
+    }
+});
+
+test("postgresql: the pool survives a dropped idle client, with its size and connect timeout", async () => {
+    const pool = createPostgresPool("postgres://user:pass@localhost:5432/testdb", 7);
+    try {
+        assert.equal(pool.options.max, 7);
+        assert.equal(pool.options.connectionTimeoutMillis, POSTGRES_CONNECT_TIMEOUT_MS);
+        // what pg emits when PostgreSQL restarts under an idle client: unheard, it would throw
+        assert.equal(pool.listenerCount("error"), 1);
+        pool.emit("error", new Error("terminating connection due to administrator command"));
+    } finally {
+        await pool.end();
     }
 });
