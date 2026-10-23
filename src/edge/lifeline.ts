@@ -97,8 +97,12 @@ export class EdgeLifeline {
         this.ws = ws;
 
         let resetTimer: NodeJS.Timeout | null = null;
+        let openedAt = 0;
+        let dialError = "";
+        let rejected = false;
 
         ws.once("open", () => {
+            openedAt = Date.now();
             logger.info("Edge", `Connected lifeline to Hub: ${hubUrl}`);
             this.isRevoked = false;
 
@@ -133,6 +137,7 @@ export class EdgeLifeline {
 
         ws.once("unexpected-response", (_req, res) => {
             if (resetTimer) clearTimeout(resetTimer);
+            rejected = true;
             const status = res.statusCode;
             logger.warn("Edge", `Lifeline handshake rejected with HTTP ${status}`);
 
@@ -150,7 +155,7 @@ export class EdgeLifeline {
             }
         });
 
-        ws.once("close", (_code, reasonBuf) => {
+        ws.once("close", (code, reasonBuf) => {
             if (resetTimer) clearTimeout(resetTimer);
             const reason = reasonBuf ? reasonBuf.toString("utf-8") : "";
 
@@ -160,13 +165,27 @@ export class EdgeLifeline {
                 logger.warn("Edge", "Lifeline superseded by another connection");
                 this.scheduleReconnect(this.config.maxReconnectInterval * 1000);
             } else if (!this.isRevoked) {
+                // 1006 without a reason: the path dropped it (a proxy such as Cloudflare cuts
+                // WebSockets without a close), not the Hub
+                if (openedAt) {
+                    const up = Math.round((Date.now() - openedAt) / 1000);
+                    const why =
+                        reason || (code === 1006 ? "no close frame from the Hub" : "no reason");
+                    logger.warn(
+                        "Edge",
+                        `Lifeline closed after ${up}s (code ${code}, ${why}), reconnecting`
+                    );
+                } else if (!rejected) {
+                    logger.warn("Edge", `Lifeline dial failed: ${dialError || `code ${code}`}`);
+                }
                 this.reconnectAttempt++;
                 this.scheduleReconnect(this.getBackoffDelay());
             }
         });
 
-        ws.once("error", () => {
-            // Handled by close event
+        ws.once("error", (err: Error) => {
+            // reported by the close event
+            dialError = err?.message ?? "";
         });
     }
 

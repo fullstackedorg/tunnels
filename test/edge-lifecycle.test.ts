@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -9,6 +9,7 @@ import { EdgeLifeline } from "../src/edge/lifeline.ts";
 import { readEdgeToken } from "../src/edge/relay.ts";
 import { parseConfig } from "../src/utils/config.ts";
 import { registerHook, clearHooks } from "../src/utils/hooks.ts";
+import { logger } from "../src/utils/logger.ts";
 import {
     getAvailablePort,
     createTempDir,
@@ -194,6 +195,48 @@ test("edge-lifecycle: superseded close reason schedules reconnect with maxReconn
         assert.equal(delay, 55000);
     } finally {
         await lifeline.stop();
+        wsServer.close();
+        fakeServer.close();
+    }
+});
+
+test("edge-lifecycle: a lifeline the path drops, or a dial that fails, is logged with its cause", async () => {
+    const fakeServer = http.createServer();
+    const port = await getAvailablePort();
+    await new Promise<void>((r) => fakeServer.listen(port, "127.0.0.1", r));
+    const wsServer = new WebSocketServer({ server: fakeServer });
+    // a proxy cutting the WebSocket: the socket goes away without a close frame
+    wsServer.on("connection", (ws) => setTimeout(() => ws.terminate(), 50));
+    const warn = mock.method(logger, "warn", () => {});
+    const run = async (hubUrl: string) => {
+        const config = parseConfig(["--edge", "--hub-url", hubUrl, "--token", "edg_testtoken"]);
+        const lifeline = new EdgeLifeline({ config });
+        const scheduled = new Promise<void>((resolve) => {
+            (lifeline as any).scheduleReconnect = () => resolve();
+        });
+        lifeline.start();
+        await scheduled;
+        await lifeline.stop();
+    };
+
+    try {
+        await run(`ws://127.0.0.1:${port}`);
+        const closed = warn.mock.calls
+            .map((c) => String(c.arguments[1]))
+            .find((m) => m.startsWith("Lifeline closed"));
+        assert.match(
+            closed ?? "",
+            /^Lifeline closed after \d+s \(code 1006, no close frame from the Hub\), reconnecting$/
+        );
+
+        const free = await getAvailablePort();
+        await run(`ws://127.0.0.1:${free}`);
+        const failed = warn.mock.calls
+            .map((c) => String(c.arguments[1]))
+            .find((m) => m.startsWith("Lifeline dial failed"));
+        assert.match(failed ?? "", /ECONNREFUSED/);
+    } finally {
+        warn.mock.restore();
         wsServer.close();
         fakeServer.close();
     }

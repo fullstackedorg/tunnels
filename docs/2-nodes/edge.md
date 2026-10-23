@@ -42,6 +42,38 @@ HUB_URL="wss://tunnels.example.com" TOKEN="edg_a1c2e3d4..." WORKERS=4 node src/m
 
 Run exactly one daemon per edge token. A second daemon with the same token replaces the first (`superseded`), and the two keep replacing each other.
 
+### Running as a Service
+
+The daemon reconnects to the Hub on its own, but nothing restarts the process if it exits or the machine reboots: run it under a supervisor. From a checkout of the `refactor` branch on Node.js 24 LTS:
+
+```bash
+git clone --branch refactor https://github.com/fullstackedorg/tunnels.git /opt/fullstacked-edge
+cd /opt/fullstacked-edge && npm ci --omit=dev
+install -m 600 /dev/null /opt/fullstacked-edge/edge.token   # then write the edge token into it
+```
+
+`/etc/systemd/system/fullstacked-edge.service`:
+
+```ini
+[Unit]
+Description=FullStacked Tunnels Edge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/fullstacked-edge
+Environment=HUB_URL=wss://tunnels.example.com
+Environment=TOKEN_FILE=/opt/fullstacked-edge/edge.token
+ExecStart=/usr/bin/node src/main.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl enable --now fullstacked-edge`, logs with `journalctl -u fullstacked-edge`. `TOKEN_FILE` keeps the token out of the unit and the process list, and a rotated token is picked up without a restart (see [Revocation Handling](#revocation-handling)). To update, `git pull` and restart the service: streams in flight end, and the Edge is back within seconds.
+
 ---
 
 ## Lifeline
@@ -56,13 +88,15 @@ Reconnect delays follow `min(MAX_RECONNECT_INTERVAL, RECONNECT_INTERVAL * 2^atte
 
 How each lifeline outcome is handled follows the [Client Retry Policy](../1-concepts/protocol-spec.md#client-retry-policy):
 
-| Outcome                                                                         | Behavior                                                                                                           |
-| :------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------- |
-| Network error, timeout, `500`, `503`, `heartbeat_timeout`, close `hub_shutdown` | Normal backoff.                                                                                                    |
-| `429`                                                                           | Wait `Retry-After` if present, otherwise normal backoff.                                                           |
-| `403`                                                                           | Backoff jumps to `MAX_RECONNECT_INTERVAL`.                                                                         |
-| Close `superseded`                                                              | Log a warning (another daemon or a newer connection uses this token) and reconnect after `MAX_RECONNECT_INTERVAL`. |
-| `401`, close `token_rolled` / `edge_deleted`                                    | Enter the revoked state.                                                                                           |
+| Outcome                                                                         | Behavior                                                                                                                                                                                                                                                                                                                                       |
+| :------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Network error, timeout, `500`, `503`, `heartbeat_timeout`, close `hub_shutdown` | Normal backoff.                                                                                                                                                                                                                                                                                                                                |
+| Closed without a close frame (`1006`)                                           | Log `Lifeline closed after <n>s (code 1006, no close frame from the Hub)` and back off normally. A proxy on the path dropped it: Cloudflare cuts WebSockets this way, every few minutes at busy times, and the relay sessions go with it. The Hub sets those sessions aside within a second and asks for fresh ones once the lifeline is back. |
+| Dial failed before the upgrade (DNS, refused, TLS)                              | Log `Lifeline dial failed: <error>` and back off normally.                                                                                                                                                                                                                                                                                     |
+| `429`                                                                           | Wait `Retry-After` if present, otherwise normal backoff.                                                                                                                                                                                                                                                                                       |
+| `403`                                                                           | Backoff jumps to `MAX_RECONNECT_INTERVAL`.                                                                                                                                                                                                                                                                                                     |
+| Close `superseded`                                                              | Log a warning (another daemon or a newer connection uses this token) and reconnect after `MAX_RECONNECT_INTERVAL`.                                                                                                                                                                                                                             |
+| `401`, close `token_rolled` / `edge_deleted`                                    | Enter the revoked state.                                                                                                                                                                                                                                                                                                                       |
 
 ### Revocation Handling
 
