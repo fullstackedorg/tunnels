@@ -75,14 +75,16 @@ curl -X POST http://localhost:3000/tunnels \
 
 ### 3. Connect from the FullStacked Runtime
 
-`tunnel.register` takes the Hub's address (`host:port`) and the tunnel token, and returns a virtual host for native drivers. Each driver connection to that host opens its own WebSocket to the Hub, so pools work unchanged. The Hub always connects to the tunnel's `internalHost:internalPort`; the port configured in the driver does not affect routing.
+`tunnel.register` takes the Hub's address (`host`, plus `port` and `unsecure` when it is not `wss://` on 443) and the tunnel token, and returns a virtual host for native drivers. The runtime keeps a small pool of tunnel sessions (WebSockets) to the Hub and carries every driver connection to that host as a stream on one of them, so pools work unchanged. The Hub always connects to the tunnel's `internalHost:internalPort`; the port configured in the driver does not affect routing.
 
 ```typescript
 import tunnel from "fullstacked/tunnel";
 import pg from "pg";
 
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "tun_4f8a9e2d1c3b...",
 });
 
@@ -140,7 +142,7 @@ A Hub reachable from the internet must sit behind a TLS-terminating reverse prox
 | **Subsystems**    | [HTTP Server](docs/3-subsystems/http-server.md)                      | Ingress routing, `req.deny()`, client IP resolution.                                                  |
 |                   | [WebSocket Server](docs/3-subsystems/websocket-server.md)            | Handshake, duplex adapter, heartbeat sweep.                                                           |
 |                   | [Tunnel Handler](docs/3-subsystems/tunnel-handlers.md)               | Session lifecycle, splicing, session registry and revocation.                                         |
-|                   | [Warden](docs/3-subsystems/warden.md)                                | Lifelines, presence, tickets, orders, clustered socket migration.                                     |
+|                   | [Warden](docs/3-subsystems/warden.md)                                | Lifelines, presence, relay sessions, orders, clustered socket moves.                                  |
 |                   | [REST API](docs/3-subsystems/rest-api-router.md)                     | Endpoints, validation, pagination, operation pipelines, token rolling.                                |
 |                   | [Entity Schemas](docs/3-subsystems/entity-schemas.md)                | `Edge` and `Tunnel`, tokens, token resolution cache.                                                  |
 |                   | [Storage Layer](docs/3-subsystems/storage-layer.md)                  | Filesystem and PostgreSQL providers.                                                                  |

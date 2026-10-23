@@ -42,6 +42,7 @@ Filesystem storage in `./data`, in-memory KV, plain `ws://localhost:3000`.
 `WORKERS > 1` requires PostgreSQL and Redis; the Hub refuses to start otherwise (tests can use [`ALLOW_FILESYSTEM_MULTIWORKER`](configuration.md#test-mode-multi-worker-without-postgresql-or-redis) instead). Initialize the schema first (see [Schema Initialization](#schema-initialization)):
 
 ```bash
+POSTGRES_URL="postgresql://postgres:secret@postgres:5432/tunnels" \
 npx drizzle-kit push --config drizzle.config.ts
 
 PORT=3000 \
@@ -118,12 +119,14 @@ If a `rest_access` hook requires authentication, adjust the health check accordi
 
 ### Schema Initialization
 
-PostgreSQL tables are managed manually with Drizzle Kit. Run one of these whenever the schema changes, before starting the new Hub version:
+PostgreSQL tables are managed manually with Drizzle Kit. Run this whenever the schema changes, before starting the new Hub version:
 
 ```bash
-# From the repository root
-npx drizzle-kit push --config drizzle.config.ts
+# From a repository checkout with dev dependencies installed (npm ci)
+POSTGRES_URL="postgresql://..." npx drizzle-kit push --config drizzle.config.ts
 ```
+
+`drizzle.config.ts` reads the database URL from `POSTGRES_URL`. `drizzle-kit` is a dev dependency: the Docker image (`npm ci --omit=dev`) does not include it, so run the command from a checkout (or a one-off container with dev dependencies), not from the Hub image.
 
 On startup the Hub checks connectivity (`SELECT 1`) and that the `edge` and `tunnel` tables exist; if not, it exits with an error that names the command above.
 

@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-    TS["TypeScript 5.x Source Code"] --> Constraints{"Node 24 Type-Stripping Rules"}
+    TS["TypeScript Source Code\n(type-checked with tsc 7)"] --> Constraints{"Node 24 Type-Stripping Rules"}
     Constraints --> Rule1["No enums (use const maps / string unions)"]
     Constraints --> Rule2["No constructor parameter properties"]
     Constraints --> Rule3["No namespaces; explicit 'import type'"]
@@ -78,7 +78,7 @@ High-performance networking servers easily become unmaintainable when socket han
 | **Max Cyclomatic Complexity**  | **10 per function** | Replace deeply nested `if/else` ladders with lookup tables or state transitions. |
 
 > [!NOTE]
-> The 300 LOC limit counts logical code lines (ignoring whitespace and full-line comments). It is automatically enforced in CI and pre-commit checks via `npm run check:loc`.
+> The 300 LOC limit counts logical code lines (ignoring whitespace and full-line comments) in `src/`. It is checked by `npm run check:loc` (part of `npm run check`); the repository has no CI workflow, so run it locally or from a pre-commit hook (see [Workflow](workflow.md#a-pre-commit-quality-gate)).
 
 ### Module Decomposition Patterns
 
@@ -99,11 +99,16 @@ When a subsystem approaches 250 LOC, split it into dedicated modules within a su
     - `storage/filesystem.ts`: Filesystem provider (coalescing, atomic rename, shared lock mode).
     - `storage/postgresql.ts`: PostgreSQL pool and Drizzle ORM provider.
     - `storage/index.ts`: Provider initialization and factory.
+- **Mux Decomposition** (shared by the Hub and the Edge):
+    - `mux/frames.ts`: Frame types, encoding and decoding.
+    - `mux/stream.ts`: `MuxStream`, one stream as a `Duplex` with credit-based flow control.
+    - `mux/session.ts`: `MuxSession`, many streams over one WebSocket.
+    - `mux/splice.ts`: `spliceStreams`, the bidirectional splice and its idempotent teardown.
 - **Tunnel Handler Decomposition**:
-    - `tunnels/direct.ts`: TCP connect and direct stream splicing.
+    - `tunnels/direct.ts`: Direct target dial (TCP connect within the deadline).
     - `tunnels/registry.ts`: Active session index by `tunnelId` / `edgeId` and revocation triggers.
-    - `tunnels/splicing.ts`: Stream pipeline attachment, telemetry hook runners, and teardown logic.
-    - `tunnels/index.ts`: Ingress handler for `tun_` runtime upgrades.
+    - `tunnels/splicing.ts`: The Hub's splice of a runtime stream to its target (`spliceStreams` with the `tunnel_connected` / `tunnel_end` hooks).
+    - `tunnels/index.ts`: Ingress handler for `tun_` runtime upgrades; one `MuxSession` per tunnel session.
 
 ---
 

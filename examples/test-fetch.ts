@@ -2,7 +2,9 @@ import tunnel from "fullstacked/tunnel";
 
 // 1. Establish tunneled socket to external HTTP service using the tunnel token
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "<http-tunnel-token>",
 });
 

@@ -72,7 +72,7 @@ In the revoked state the Edge:
 2. Stops accepting orders.
 3. Lets in-flight streams finish for up to `DRAIN_TIMEOUT` (default 30s), then resets the rest and closes its relay sessions. When revocation comes from a token roll or deletion, the Hub also closes those sessions itself (`token_rolled` / `edge_deleted`), so draining is only a safety net.
 4. Stays alive and retries the lifeline every `REVOKED_POLL_INTERVAL` (default 300s).
-    - **With `TOKEN_FILE`**: the Edge re-reads the token from the file on disk before each poll attempt. In Kubernetes/Docker secrets environments, updating the secret file allows the daemon to automatically recover without restarting the pod or container!
+    - **With `TOKEN_FILE`**: the Edge re-reads the token from the file on disk before each lifeline attempt, including every poll. In Kubernetes/Docker secrets environments, updating the secret file allows the daemon to automatically recover without restarting the pod or container!
     - **With static `TOKEN`**: the poll acts as a quiescent keep-alive so container supervisors (e.g. `restart: always`) do not enter aggressive restart crash loops. Restart the daemon with the new token to resume.
 
 A rejected relay session dial (`401` included) is retried once and then reported with `open_relay_failed`, which fails only the streams waiting for that session (`relay_dial_failed`); it never affects the lifeline.

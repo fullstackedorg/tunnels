@@ -52,9 +52,9 @@ Presence lets any worker, and `GET /edges`, know whether an Edge is online:
 | Key                       | Value                                   | TTL                           | Written                                                                         |
 | :------------------------ | :-------------------------------------- | :---------------------------- | :------------------------------------------------------------------------------ |
 | `edge:<edgeId>:worker`    | Worker identity `<bootId>:<workerId>`   | `2 * HEARTBEAT_TIMEOUT` (60s) | On accept, then refreshed once per heartbeat sweep while the lifeline is alive. |
-| `edge:<edgeId>:last_seen` | Unix seconds of the last frame received | 30 days (rolling)             | On accept, then once per heartbeat sweep.                                       |
+| `edge:<edgeId>:last_seen` | Unix seconds of the last presence write | 30 days (rolling)             | On accept, then once per heartbeat sweep.                                       |
 
-Presence is written once per sweep per lifeline, never per pong, so KV load is one write pair per Edge per `HEARTBEAT_INTERVAL`.
+Presence is written once per sweep per lifeline, never per pong, so KV load is three writes per Edge per `HEARTBEAT_INTERVAL` (`SET edge:<id>:worker`, `SET edge:<id>:last_seen`, `SADD worker:<identity>:edges`). `last_seen` is the time of the sweep, so it can be later than the last frame actually received by up to one `HEARTBEAT_TIMEOUT`.
 
 An Edge is **online** when `edge:<id>:worker` exists and its `bootId` equals the current Hub's `bootId`. Because `bootId` changes on every Hub start, mappings left in Redis by a previous run are never mistaken for live lifelines.
 
@@ -153,7 +153,7 @@ sequenceDiagram
     P->>B: forward
     B->>Edge: open_relay { worker: A } (lifeline)
     Edge->>C: Relay session upgrade (edge token, x-relay-worker: A)
-    C->>C: Resolve edge, lifeline_connect; keep socket paused
+    C->>C: Resolve edge, lifeline_connect (handshake not completed)
     C->>P: relay_session_socket { edgeId, head, headers } + raw socket
     P->>A: forward message + raw socket
     A->>A: handleUpgrade(reqAdapter, socket, head); register; wake the stream
@@ -163,7 +163,7 @@ sequenceDiagram
 
 Migration details:
 
-- The receiving worker neither completes the handshake nor reads further bytes; it forwards the request headers and the already-read `head` bytes with the socket.
+- The receiving worker does not complete the handshake; it forwards the request headers and the already-read `head` bytes with the socket. The socket is not paused at that point (the HTTP server resumes it once `hub_upgrade` passes), but the Edge sends nothing before the `101`, so no bytes are lost.
 - The Primary and workers use IPC `serialization: "advanced"`, so `head` arrives as a `Buffer`. The named worker passes it as the third argument of `wss.handleUpgrade` and never calls `socket.unshift`.
 - The named worker builds a minimal `IncomingMessage`-compatible adapter (`method`, `url: "/"`, `headers`, `socket`) for `ws`.
 
@@ -207,7 +207,7 @@ Sessions owned by the dead worker end when their sockets close, and so do the re
 
 ## Edge Token Roll and Deletion
 
-1. The change is committed in storage, then the edge's cached entity and presence keys are evicted.
+1. The change is committed in storage, then the token cache is updated: on a roll the new token is cached and the old one is evicted and tombstoned; on deletion the edge's (and its tunnels') entries are evicted and tombstoned, and its presence keys are deleted. A roll leaves the presence keys in place.
 2. The lifeline is closed with `1000 token_rolled` or `1000 edge_deleted` (via `close_lifeline` in clustered mode); `lifeline_disconnect` fires.
 3. All sessions relayed through that Edge are closed with the same reason (via `sever_sessions`), and every worker closes the Edge's relay sessions with it; streams waiting for one fail with it too.
 4. The Edge enters its [revoked state](../2-nodes/edge.md#revocation-handling). Further attempts with the old token get `401`.

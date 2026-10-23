@@ -5,13 +5,12 @@ flowchart TD
     subgraph Phase1["1. Docs-as-Code (Documentation First)"]
         Spec["Protocol & Architectural Specs\n(Markdown + Mermaid in docs/)"]
         Subsystems["Subsystem Interfaces & Error Taxonomies\n(Warden, Storage, KV, Handlers)"]
-        DraftSync["Sync & Review Cloud Drafts\n(npx fullstacked --file cli.ts cloud-push tunnels)"]
-        Spec --> Subsystems --> DraftSync
+        Spec --> Subsystems
     end
 
     subgraph Phase2["2. Test-Driven Development (TDD)"]
         Interpret["Interpret Functional Specs into Tests\n(node:test + node:assert/strict)"]
-        Unit["Unit Tests\n(Protocol Parsers, Tickets, Tokens)"]
+        Unit["Unit Tests\n(Frame Parsers, Relay Placement, Tokens)"]
         MultiWorker["Fast Multi-Worker Tests\n(ALLOW_FILESYSTEM_MULTIWORKER=true)"]
         IntegSuite["Integration Suite\n(Docker Compose: PG, Redis, S3, Git + Browser)"]
         Interpret --> Unit & MultiWorker & IntegSuite
@@ -20,11 +19,11 @@ flowchart TD
     subgraph Phase3["3. Code Implementation (Make Tests Pass)"]
         SrcCode["TypeScript Sources (src/*.ts)\n(Node 24 Native Type-Stripping)"]
         QualityGates["Quality Checks (npm run check)\nPrettier 4 Spaces, tsc, Max 300 LOC"]
-        CovGate["Coverage Gate\n(Strictly >= 95% Line & Branch Coverage)"]
+        CovGate["Coverage Report\n(npm run test:coverage, target >= 95%)"]
         SrcCode --> QualityGates --> CovGate
     end
 
-    DraftSync ==>|"Documented Acceptance Contracts"| Interpret
+    Subsystems ==>|"Documented Acceptance Contracts"| Interpret
     Phase2 -.->|"Red: Initial Test Failure"| SrcCode
     CovGate ==>|"Green: All Tests Pass"| Release["Production Ready Runtime"]
 ```
@@ -45,24 +44,21 @@ sequenceDiagram
     participant Docs as 1. Docs-as-Code (Markdown & Mermaid)
     participant Tests as 2. TDD Suite (node:test)
     participant Impl as 3. Implementation (src/*.ts)
-    participant Cloud as Cloud Drafts & Review (cli.ts)
 
-    Note over Docs,Cloud: Phase 1: Documentation (Docs-as-Code)
+    Note over Docs,Impl: Phase 1: Documentation (Docs-as-Code)
     Docs->>Docs: Author architectural & protocol specs in docs/
     Docs->>Docs: Define schemas, close codes, state machines & Mermaid diagrams
-    Docs->>Cloud: Push drafts online: npx fullstacked --file cli.ts cloud-push tunnels
-    Cloud-->>Docs: Review drafts & validate diagrams: cli.ts validate-diagrams
 
-    Note over Docs,Cloud: Phase 2: Test-Driven Development (TDD)
+    Note over Docs,Impl: Phase 2: Test-Driven Development (TDD)
     Docs->>Tests: Interpret documented behaviors & error states into test cases
     Tests->>Tests: Author unit, multi-worker & Docker Compose integration tests
     Tests->>Tests: Execute test runner (node --test) -> All tests FAIL (Red Phase)
 
-    Note over Docs,Cloud: Phase 3: Code Implementation & Verification
+    Note over Docs,Impl: Phase 3: Code Implementation & Verification
     Tests->>Impl: Author minimal TypeScript code to satisfy test assertions
     Impl->>Tests: Run test runner -> Tests pass (Green Phase)
     Impl->>Impl: Refactor to maintain <= 300 LOC budget & 4-space Prettier format
-    Impl->>Tests: Verify >= 95% line and branch test coverage
+    Impl->>Tests: Review the coverage report (target >= 95% lines and branches)
 ```
 
 ### Phase 1: Documentation (Docs-as-Code)
@@ -76,20 +72,8 @@ Every feature, protocol enhancement, or subsystem refactoring in FullStacked Tun
     - For subsystems: Define provider interfaces, data models, and operation pipelines in [Subsystems](../3-subsystems/tunnel-handlers.md).
 2. **Deterministic Boundaries & Error Taxonomy**:
     - All failure scenarios, timeout windows, and edge cases must be cataloged in advance. Close codes must use exact entries from the [Close Reason Taxonomy](../1-concepts/protocol-spec.md#close-reason-taxonomy).
-3. **Docs-as-Code Tooling & Online Draft Synchronization**:
-    - Technical documentation is maintained directly within the repository alongside code.
-    - Mermaid diagrams embedded in documentation are strictly validated using:
-        ```bash
-        npx fullstacked --file cli.ts validate-diagrams tunnels
-        ```
-    - Documentation drafts are continuously pushed and reviewed across devices using the cloud editor draft CLI:
-        ```bash
-        # Push all updated documentation drafts to cloud storage (S3 + PostgreSQL)
-        npx fullstacked --file cli.ts cloud-push tunnels
-
-        # Or push a specific updated document
-        npx fullstacked --file cli.ts cloud-push tunnels docs/5-development/workflow.md
-        ```
+3. **Docs-as-Code**:
+    - Technical documentation is maintained directly within the repository alongside code, with Mermaid diagrams embedded in the Markdown.
 
 ### Phase 2: Test-Driven Development (TDD) — Interpreting Docs into Tests
 
@@ -118,11 +102,11 @@ With the comprehensive test harness in place, the production code is authored:
     - Formatting must adhere to Prettier with 4-space tab indentation (`npm run fmt:check`).
 3. **The Refactor Phase & Coverage Verification**:
     - Clean up, optimize, and modularize code while maintaining passing tests.
-    - Run the coverage verification gate:
+    - Run the coverage report:
         ```bash
-        node --test --experimental-test-coverage
+        npm run test:coverage
         ```
-    - FullStacked Tunnels strictly enforces a minimum of **95% code coverage at all times** across all lines, functions, and branches before code can be accepted.
+    - The target is **95% line and branch coverage**. It is a review target, not an automated gate: `test:coverage` sets no coverage threshold and the repository has no CI workflow.
 
 ---
 
@@ -201,6 +185,7 @@ function countLoc(filePath: string): number {
 }
 
 function scanDir(dir: string): boolean {
+    if (!fs.existsSync(dir)) return true;
     let ok = true;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const fullPath = path.join(dir, entry.name);
@@ -234,7 +219,7 @@ console.log(`✅ All source files in src are within the ${MAX_LOC} LOC limit.`);
 
 ### A. Pre-Commit Quality Gate
 
-To prevent broken code or misformatted files from entering git history, enable a lightweight pre-commit hook (e.g. with `simple-git-hooks` or native `.git/hooks/pre-commit`):
+No hook or CI workflow ships with the repository. To prevent broken code or misformatted files from entering git history, enable a lightweight pre-commit hook locally (e.g. with `simple-git-hooks` or native `.git/hooks/pre-commit`):
 
 ```bash
 #!/bin/sh
@@ -248,7 +233,7 @@ Because `npm run check` runs Prettier check, TypeScript typecheck, and LOC verif
 The multi-worker test mode (`ALLOW_FILESYSTEM_MULTIWORKER=true`, see [Test Mode](../2-nodes/configuration.md#test-mode-multi-worker-without-postgresql-or-redis)) is built specifically for rapid developer feedback and CI pipelines:
 
 - **Ideal for Unit & E2E Testing**: Runs in milliseconds without booting external database containers or heavyweight background daemons.
-- **95% Code Coverage at All Times**: Perfect for gathering complete line and branch coverage across core routing, relay session routing, and process lifecycle logic. The project strictly maintains a minimum of **95% code coverage at all times**.
+- **Coverage**: Gathers line and branch coverage across core routing, relay session routing, and process lifecycle logic, toward the 95% target.
 - **Isolated Environments**: Assign each test run a temporary folder (`DATA_DIR=$(mktemp -d)`) to execute in complete isolation.
 - **Clustering & IPC Verification**: Exercises relay session socket moves, inter-process communication (IPC) between Primary and worker processes, relay session saturation, and worker crash recovery entirely in memory and filesystem.
 
@@ -293,7 +278,7 @@ test("a stream waits for a relay session until the deadline", async () => {
 
 - Zero third-party test framework overhead (no Jest, no Mocha).
 - Compatible with native Node 24 TypeScript type stripping.
-- Built-in code coverage reporting (`node --test --experimental-test-coverage`) ensures the mandatory 95% code coverage threshold is strictly enforced at all times.
+- Built-in code coverage reporting (`npm run test:coverage`) reports progress toward the 95% target; no threshold is enforced.
 
 ### E. Architectural Boundary Checks
 

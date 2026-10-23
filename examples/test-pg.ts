@@ -3,7 +3,9 @@ import pg from "pg";
 
 // 1. Establish tunneled socket to external PostgreSQL database using the tunnel token
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "<pg-tunnel-token>",
 });
 

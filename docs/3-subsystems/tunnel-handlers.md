@@ -82,7 +82,7 @@ In addition to REST-triggered mutations, the Hub exports a programmatic API allo
  *
  * @param filter An object containing tunnelId, edgeId, or both.
  * @param reason The close taxonomy reason to report (default: "token_rolled").
- * @returns Total number of sessions severed.
+ * @returns Number of sessions severed on this worker (other workers' counts are not collected).
  */
 export async function severSessions(
     filter: { tunnelId?: string; edgeId?: string },
@@ -97,7 +97,7 @@ import { severSessions } from "../src/tunnels/registry.ts";
 
 // Terminate all sessions for a specific tunnel immediately
 const count = await severSessions({ tunnelId: "tun-uuid-1234" }, "token_rolled");
-console.log(`Severed ${count} active session(s)`);
+console.log(`Severed ${count} active session(s) on this worker`);
 ```
 
 ## Hooks

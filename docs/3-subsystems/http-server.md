@@ -12,7 +12,7 @@ flowchart TD
     end
 
     subgraph UpgradeFlow["WebSocket Upgrades"]
-        Type -->|"Upgrade"| Wrap2["Pause socket; attach req.id, req.clientIp, req.deny()"]
+        Type -->|"Upgrade"| Wrap2["Pause socket (until hub_upgrade passes);\nattach req.id, req.clientIp, req.deny()"]
         Wrap2 --> HubUp["hub_upgrade hook\n(all upgrades, any path)"]
         HubUp -->|"denied"| Halt2["Rejection written, socket ended"]
         HubUp -->|"pass"| Path{"Path"}
@@ -41,7 +41,7 @@ One TCP port (`PORT`, default 3000) serves both the REST API and all WebSocket u
 
 ### WebSocket Upgrades
 
-1. Pause the socket so no bytes are consumed before the handshake is complete.
+1. Pause the socket while `hub_upgrade` runs. It is resumed as soon as the hook passes, before path routing, token resolution and the remaining gating hooks; clients send nothing before the `101` response, so in practice no bytes are read early.
 2. Attach `req.id`, `req.clientIp`, and `req.deny()`.
 3. Run the `hub_upgrade` gating hook. It runs for **every** upgrade, on any path, before any token resolution. It may inspect or rewrite `req.headers.authorization` (the core never strips prefixes such as `Bearer `), apply global limits, or deny.
 4. Route by path:

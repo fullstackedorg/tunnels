@@ -67,12 +67,12 @@ x-request-id: 7d0c6c1e-2f55-4a8e-9b61-0a3d1f2e4b5c
 version: 0.1.0
 ```
 
-| Header           | Required            | Description                                                                                                                                                                                                             |
-| :--------------- | :------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Authorization`  | Yes                 | The raw token, with no scheme prefix: a tunnel token (`tun_...`) or edge token (`edg_...`). The core does not strip `Bearer ` or any other prefix; a `hub_upgrade` hook may normalize the header before classification. |
-| `x-relay-worker` | Relay sessions only | The Hub worker identity (`<bootId>:<workerId>`) named in the [`open_relay`](#a-open_relay-hub--edge) order the Edge is answering. An edge-token upgrade with this header is a relay session; without it, a lifeline.    |
-| `x-request-id`   | No                  | Client-supplied correlation id. Kept only as `correlationId` in logs and forwarded to Edges. It is never used as a key. The Hub always generates its own `reqId` (UUIDv4).                                              |
-| `version`        | No                  | Informational semver of the connecting runtime or Edge. Recorded (for Edges, stored as `edge.version`) but never used to accept or reject a connection. The protocol is not versioned.                                  |
+| Header           | Required            | Description                                                                                                                                                                                                                                                                                                            |
+| :--------------- | :------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Authorization`  | Yes                 | The raw token, with no scheme prefix: a tunnel token (`tun_...`) or edge token (`edg_...`). The core does not strip `Bearer ` or any other prefix; a `hub_upgrade` hook may normalize the header before classification.                                                                                                |
+| `x-relay-worker` | Relay sessions only | The Hub worker identity (`<bootId>:<workerId>`) named in the [`open_relay`](#a-open_relay-hub--edge) order the Edge is answering. An edge-token upgrade with this header is a relay session; without it, a lifeline.                                                                                                   |
+| `x-request-id`   | No                  | Client-supplied correlation id. Kept only as `correlationId` in logs and forwarded to Edges. It is never used as a key. The Hub always generates its own `reqId` (UUIDv4).                                                                                                                                             |
+| `version`        | No                  | Informational semver of the connecting runtime or Edge. Recorded (for Edges, stored as `edge.version`) but never used to accept or reject a connection. The protocol is not versioned. The Edge currently sends the fixed string `0.1.0` on its lifeline (not its package version) and no `version` on relay sessions. |
 
 The token prefix determines how the connection is handled: `tun_` = runtime socket, `edg_` = lifeline, or relay session when `x-relay-worker` is present.
 
@@ -83,7 +83,7 @@ The token prefix determines how the connection is handled: `tun_` = runtime sock
 >
 > ```typescript
 > const tunnelName = await tunnel.register({
->     host: "tunnels.example.com:443",
+>     host: "tunnels.example.com", // wss:// on port 443 by default
 >     authorization: "tun_4f8a9e2d1c3b...",
 > });
 > const tunneledWS = new window.WebSocket("ws://" + tunnelName);
@@ -200,7 +200,7 @@ A relay session carries any number of streams up to that limit and outlives them
 
 ### D. Relayed Failure Reason Sources
 
-Every failed relayed stream reaches the runtime (`RESET`) and `tunnel_end` with exactly one reason:
+Every failed relayed stream reaches the runtime (`RESET`) with exactly one reason, and `tunnel_end` reports the same reason for every stream that passed the liveness check. A stream refused by the liveness check itself (the Edge has no presence: `edge_disconnected`; KV unavailable while checking presence: `stream_error`) is answered before `tunnel_start`, so neither `tunnel_start` nor `tunnel_end` fires for it (see [Tunnel Handler](../3-subsystems/tunnel-handlers.md#session-lifecycle)).
 
 | Observed by     | Condition                                                                                                                                             | Reason                                                         |
 | :-------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------- |
@@ -277,18 +277,20 @@ A runtime upgrade with a tunnel token opens a **tunnel session**: one WebSocket 
     | `3`  | `DATA`   | Both                      | stream bytes, verbatim, at most 32 KiB per frame                                              |
     | `4`  | `WINDOW` | Both                      | u32 big-endian credit increment                                                               |
     | `5`  | `FIN`    | Both                      | none: the sender has no more bytes                                                            |
-    | `6`  | `RESET`  | Both                      | utf-8 [close reason](#close-reason-taxonomy): the stream is over                              |
+    | `6`  | `RESET`  | Both                      | utf-8 [close reason](#close-reason-taxonomy): the stream is over (after a `FIN`, see below)   |
 
 2. The opener (the runtime on a tunnel session, the Hub on a relay session) picks stream ids, increasing, and never reuses one on a session. The runtime may send `DATA` right after `OPEN`, before `OPENED`; the Hub holds those bytes until the target is spliced (the Hub itself sends no `DATA` on a relay stream before `OPENED`). A failed dial answers `RESET` with the reason instead of `OPENED`. A session over its stream limit (256, on tunnel sessions and relay sessions alike) answers `RESET stream_limit`.
 3. **Flow control**: each side may send 256 KiB of `DATA` per stream beyond what the other side credited back; the receiver sends `WINDOW` as its consumer reads, so one slow stream never stalls the others on the WebSocket. A receiver that gets more `DATA` on a stream than it has credited ends that stream with `RESET stream_error` (the session and its other streams carry on), so a peer ignoring flow control cannot grow the receiver's buffers.
 4. `permessage-deflate` is disabled on every WebSocket. The Hub and the Edge accept WebSocket messages up to 64 KiB (a frame is at most 32 KiB of `DATA` plus its 5-byte header); a larger message closes the WebSocket with `1009 Message Too Big`.
-5. The port a driver uses on the virtual host returned by `tunnel.register` is a runtime-side detail and is never sent to the Hub. The target is always `internalHost:internalPort` of the tunnel resolved from the token. `tunnel.register({ host })` itself takes the Hub's address as `host:port` (for example `tunnels.example.com:443`).
+5. The port a driver uses on the virtual host returned by `tunnel.register` is a runtime-side detail and is never sent to the Hub. The target is always `internalHost:internalPort` of the tunnel resolved from the token. `tunnel.register` itself takes the Hub's hostname as `host` (for example `tunnels.example.com`), with a separate `port` (default `443`, or `80` with `unsecure`) and `unsecure: true` for a plain `ws://` Hub.
 6. Closing the WebSocket ends every stream on it with the close reason. Severing (revocation, quota, tunnel updates) closes whole tunnel sessions; severing an Edge also closes its relay sessions.
 
 ### Symmetrical Teardown (No Half-Close)
 
-- When either side of a stream ends (`FIN` or target FIN), the end is carried to the other side, its pending bytes flushed, then both are torn down. TCP half-close is not kept open.
-- A stream ends cleanly with `FIN` both ways; errors and aborts send `RESET` with the reason. The WebSocket close codes in [Close Codes](#5-close-codes) apply to whole sessions (tunnel sessions, relay sessions) and lifelines.
+- When either side of a stream ends (`FIN` or target FIN), the end is carried to the other side (a `FIN` on the stream, or a TCP FIN to the target) once its pending bytes are flushed, then both are torn down. TCP half-close is not kept open.
+- The teardown resets the mux stream with the end reason: a clean end is a `FIN` followed by `RESET client_close` or `RESET target_close` (whichever side ended first), not `FIN` both ways. Errors and aborts send `RESET` with their reason, without a `FIN`.
+- A `RESET` received after the peer's `FIN` only carries the reason: the bytes the peer sent before its `FIN` are still delivered to the consumer, then the stream closes (after at most 5 seconds if the consumer never reads them). A `RESET` without a prior `FIN` discards the stream at once.
+- The WebSocket close codes in [Close Codes](#5-close-codes) apply to whole sessions (tunnel sessions, relay sessions) and lifelines.
 
 Protocols that work: PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1 (including keep-alive), HTTP/2 and gRPC, and interactive SSH sessions. Protocols that do **not** work: any client that half-closes its write side (`shutdown(SHUT_WR)`) and then waits for a reply on the read side, for example some HTTP/1.0 clients or `nc -N`-style request/response pipes.
 

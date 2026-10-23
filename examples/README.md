@@ -3,7 +3,7 @@
 Every service recipe has two steps:
 
 1. **Register the tunnel** on the Hub through the REST API. The Hub generates the token and returns it.
-2. **Connect from the FullStacked runtime** with `tunnel.register({ host, authorization })`, where `host` is the Hub's address (`host:port`) and `authorization` is the tunnel token. It returns a virtual host for native drivers; each driver connection opens its own WebSocket to the Hub, so connection pools work unchanged. The Hub always connects to the tunnel's `internalHost:internalPort`; the port configured in the driver follows the usual convention for that service and does not affect routing.
+2. **Connect from the FullStacked runtime** with `tunnel.register({ host, port?, unsecure?, authorization })`, where `host` is the Hub's hostname (no port), `port` its port (default `443`, or `80` with `unsecure`), `unsecure: true` selects plain `ws://` instead of `wss://`, and `authorization` is the tunnel token. It returns a virtual host for native drivers; the runtime carries each driver connection as a stream on a pooled tunnel session (WebSocket) to the Hub, so connection pools work unchanged. The Hub always connects to the tunnel's `internalHost:internalPort`; the port configured in the driver follows the usual convention for that service and does not affect routing.
 
 > [!NOTE]
 > The `fullstacked/tunnel` module is built directly into the FullStacked runtime. Execute any example script with:
@@ -44,7 +44,9 @@ import tunnel from "fullstacked/tunnel";
 import pg from "pg";
 
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "tun_4f8a9e2d1c3b...",
 });
 
@@ -73,7 +75,9 @@ import tunnel from "fullstacked/tunnel";
 import { createClient } from "redis";
 
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "tun_9b2c3d4e5f6a...",
 });
 
@@ -97,7 +101,9 @@ import tunnel from "fullstacked/tunnel";
 import mysql from "mysql2/promise";
 
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "tun_7a1f2e3d4c5b...",
 });
 
@@ -126,7 +132,9 @@ import tunnel from "fullstacked/tunnel";
 import { S3Client, ListBucketsCommand } from "@aws-sdk/client-s3";
 
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "tun_3c8e1a2b5d4e...",
 });
 
@@ -153,7 +161,9 @@ curl -X POST http://localhost:3000/tunnels \
 import tunnel from "fullstacked/tunnel";
 
 const host = await tunnel.register({
-    host: "localhost:3000",
+    host: "localhost",
+    port: 3000,
+    unsecure: true, // plain ws:// to a local Hub
     authorization: "tun_1b5e9f8a2c4d...",
 });
 
@@ -189,7 +199,7 @@ import tunnel from "fullstacked/tunnel";
 import pg from "pg";
 
 const host = await tunnel.register({
-    host: "tunnels.example.com:443",
+    host: "tunnels.example.com", // wss:// on port 443 by default
     authorization: "tun_1a2b3c4d...",
 });
 
