@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import net from "node:net";
 import { startHub, type HubInstance } from "../src/hub/index.ts";
 import { startEdge, type EdgeInstance } from "../src/edge/index.ts";
 import { parseConfig } from "../src/utils/config.ts";
@@ -422,6 +423,65 @@ test("relayed-tunnel: a runtime that leaves during the Edge's gate is dropped wi
         if (edge) await edge.stop();
         if (hub) await hub.close();
         await echo.close();
+        cleanupTempDir(dir);
+    }
+});
+
+test("relayed-tunnel: a server-first greeting reaches the runtime when a connected hook listens to data", async () => {
+    clearHooks();
+    const greeter = net.createServer((socket) => socket.end("HELLO FROM TARGET\n"));
+    await new Promise<void>((r) => greeter.listen(0, "127.0.0.1", () => r()));
+    const greeterPort = (greeter.address() as net.AddressInfo).port;
+    const hubPort = await getAvailablePort();
+    const dir = createTempDir("relayed-greet-");
+    let hub: HubInstance | null = null;
+    let edge: EdgeInstance | null = null;
+
+    try {
+        hub = await startHub(parseConfig(["--port", String(hubPort), "--data-dir", dir]));
+        const baseUrl = `http://127.0.0.1:${hubPort}`;
+        const edgeRes = await jsonFetch(`${baseUrl}/edges`, {
+            method: "POST",
+            body: { name: "Greeting Edge" },
+        });
+        edge = await startEdge(
+            parseConfig(["--hub-url", `ws://127.0.0.1:${hubPort}`, "--token", edgeRes.data.token])
+        );
+        for (let i = 0; i < 50; i++) {
+            if ((await jsonFetch(`${baseUrl}/edges/${edgeRes.data.id}`)).data?.connected) break;
+            await new Promise((r) => setTimeout(r, 50));
+        }
+        const tunnelRes = await jsonFetch(`${baseUrl}/tunnels`, {
+            method: "POST",
+            body: {
+                name: "Greeting Tunnel",
+                internalHost: "127.0.0.1",
+                internalPort: greeterPort,
+                edgeId: edgeRes.data.id,
+            },
+        });
+
+        // like a byte meter: counts what passes, from a hook awaited before data flows
+        let counted = 0;
+        registerHook("tunnel_connected", async (_req: any, _t: any, runtime: any, target: any) => {
+            for (const s of [runtime, target]) s.on("data", (d: Buffer) => (counted += d.length));
+            await new Promise((r) => setTimeout(r, 50));
+        });
+
+        const ws = await connectTunnelClient(`ws://127.0.0.1:${hubPort}/`, {
+            headers: { Authorization: tunnelRes.data.token },
+        });
+        const greeting = await new Promise<string>((resolve) =>
+            ws.on("message", (d: Buffer) => resolve(d.toString("utf-8")))
+        );
+        assert.equal(greeting, "HELLO FROM TARGET\n");
+        assert.equal(counted, greeting.length);
+        ws.close();
+    } finally {
+        clearHooks();
+        if (edge) await edge.stop();
+        if (hub) await hub.close();
+        await new Promise((r) => greeter.close(r));
         cleanupTempDir(dir);
     }
 });

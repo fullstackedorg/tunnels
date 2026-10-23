@@ -221,7 +221,7 @@ When the Hub gives up on a stream it already opened on a relay session (deadline
 
 ### E. Saturation
 
-The lifeline only carries `open_relay` orders, at most one outstanding per Edge per Hub worker, so it has no saturation limit. Saturation is per relay session: a Hub worker places each new stream on the Edge's relay session that carries the fewest streams, skipping clogged ones, and asks the Edge for a spare session once every session carries a stream, up to 8 sessions per Edge per worker (see [Warden](../3-subsystems/warden.md#placement)). When the chosen session already carries `MAX_STREAMS_PER_RELAY` (256) streams, the stream is answered `RESET edge_saturated` (close code `1013`) and `tunnel_end` reports `edge_saturated`. This happens after the runtime's `OPEN` and `tunnel_start`, in every mode.
+The lifeline only carries `open_relay` orders, bounded by the session cap, so it has no saturation limit. Saturation is per relay session: a Hub worker gives each new stream an idle relay session of the Edge, asking for one more (and waiting up to 1 s for it) when every session carries a stream, up to 64 sessions per Edge per worker, then shares the session with the fewest streams, skipping clogged ones (see [Warden](../3-subsystems/warden.md#placement)). When the chosen session already carries `MAX_STREAMS_PER_RELAY` (256) streams, the stream is answered `RESET edge_saturated` (close code `1013`) and `tunnel_end` reports `edge_saturated`. This happens after the runtime's `OPEN` and `tunnel_start`, in every mode.
 
 ---
 

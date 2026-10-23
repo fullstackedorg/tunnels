@@ -5,15 +5,19 @@ import { closeWithReason, getLocalCloseReason, registerHeartbeat } from "../ws/h
 
 /**
  * The relay sessions Edges hold to this Hub worker: WebSockets the Edge dials on request
- * (`open_relay` on its lifeline), each carrying many streams the Hub opens, one per runtime
- * stream. Edges sit on home networks, where streams sharing one WebSocket wait on each other, so
- * a new stream goes on the session with the fewest streams, and once every session carries one
- * the Edge is asked for another (a spare), up to MAX_RELAY_SESSIONS. A session is skipped while
- * clogged: CLOG_STREAMS streams, more than CLOG_QUEUED_BYTES waiting to go out for over
- * CLOG_QUEUED_MS, or a round trip over CLOG_RTT_FACTOR x its best + CLOG_RTT_SLACK_MS. Idle
- * sessions close after RELAY_IDLE_MS, except the one an Edge keeps with its lifeline worker.
+ * (`open_relay` on its lifeline), each carrying streams the Hub opens, one per runtime stream.
+ * Edges sit on home networks, where streams sharing one WebSocket wait a round trip on each
+ * other, and streams stay on their session for life (keep-alive connections), so a new stream
+ * goes on an idle session; when every session carries a stream, the Edge is asked for one more
+ * and the stream waits up to SPARE_WAIT_MS for it (requests run in parallel, up to
+ * MAX_RELAY_SESSIONS), else it shares the least loaded one. Taking the last idle session asks
+ * for a spare ahead of the next stream. A session is skipped while clogged: CLOG_STREAMS
+ * streams, more than CLOG_QUEUED_BYTES waiting to go out for over CLOG_QUEUED_MS, or a round trip
+ * over CLOG_RTT_FACTOR x its best + CLOG_RTT_SLACK_MS. Idle sessions close after RELAY_IDLE_MS,
+ * except the one an Edge keeps with its lifeline worker.
  */
-export const MAX_RELAY_SESSIONS = 8;
+export const MAX_RELAY_SESSIONS = 64;
+export const SPARE_WAIT_MS = 1000;
 const CLOG_STREAMS = 32;
 const CLOG_QUEUED_BYTES = 512 * 1024;
 const CLOG_QUEUED_MS = 50;
@@ -30,6 +34,8 @@ export interface Relay {
     queuedSince: number;
     rttMin: number;
     rttSmooth: number;
+    /** Streams placed on it and not opened yet. */
+    reserved: number;
 }
 
 interface Waiter {
@@ -39,7 +45,8 @@ interface Waiter {
 
 const relays = new Map<string, Relay[]>();
 const waiters = new Map<string, Set<Waiter>>();
-const requestedAt = new Map<string, number>();
+const spareWaiters = new Map<string, ((relay: Relay | null) => void)[]>();
+const requestedAt = new Map<string, number[]>();
 
 let requester: (edgeId: string) => void = () => {};
 let keepsWarm: (edgeId: string) => boolean = () => false;
@@ -62,12 +69,21 @@ export function stopRelays(): void {
     timers = [];
 }
 
-/** Asks the Edge for one more session, unless a request is already out (or `force`). */
-export function requestRelay(edgeId: string, force = false): void {
-    const at = requestedAt.get(edgeId);
-    if (!force && at && Date.now() - at < RELAY_REQUEST_TIMEOUT_MS) return;
-    requestedAt.set(edgeId, Date.now());
+function pendingRequests(edgeId: string): number[] {
+    const asked = (requestedAt.get(edgeId) ?? []).filter(
+        (at) => Date.now() - at < RELAY_REQUEST_TIMEOUT_MS
+    );
+    requestedAt.set(edgeId, asked);
+    return asked;
+}
+
+/** Asks the Edge for one more session; false once MAX_RELAY_SESSIONS are up or asked for. */
+export function requestRelay(edgeId: string, force = false): boolean {
+    const asked = pendingRequests(edgeId);
+    if (!force && liveRelays(edgeId).length + asked.length >= MAX_RELAY_SESSIONS) return false;
+    asked.push(Date.now());
     requester(edgeId);
+    return true;
 }
 
 export function liveRelays(edgeId: string): Relay[] {
@@ -85,21 +101,71 @@ function clogged(r: Relay): boolean {
     return r.rttMin > 0 && r.rttSmooth > CLOG_RTT_FACTOR * r.rttMin + CLOG_RTT_SLACK_MS;
 }
 
+const load = (r: Relay) => r.session.size + r.reserved;
 const lighter = (a: Relay, b: Relay) =>
-    b.session.size < a.session.size ||
-    (b.session.size === a.session.size && b.ws.bufferedAmount < a.ws.bufferedAmount)
-        ? b
-        : a;
+    load(b) < load(a) || (load(b) === load(a) && b.ws.bufferedAmount < a.ws.bufferedAmount) ? b : a;
 
-/** The session for a new stream (see above), or undefined when the Edge has none here yet. */
+/** The least loaded session that is not clogged (else the least loaded), if any is up. */
 export function pickRelay(edgeId: string): Relay | undefined {
     const live = liveRelays(edgeId);
     if (!live.length) return undefined;
-    const free = live.filter((r) => !clogged(r) && r.session.size < MAX_STREAMS_PER_RELAY);
-    const chosen = (free.length ? free : live).reduce(lighter);
-    const spare = live.some((r) => r !== chosen && r.session.size === 0);
-    if (!spare && live.length < MAX_RELAY_SESSIONS) requestRelay(edgeId);
-    return chosen;
+    const free = live.filter((r) => !clogged(r) && load(r) < MAX_STREAMS_PER_RELAY);
+    return (free.length ? free : live).reduce(lighter);
+}
+
+/**
+ * The session for a new stream (see above), reserved for it: the caller opens the stream on it
+ * and gives the reservation back. Rejects with a reason when no session comes before the deadline.
+ */
+export async function placeStream(
+    edgeId: string,
+    deadline: number,
+    signal?: AbortSignal
+): Promise<Relay> {
+    let relay = pickRelay(edgeId);
+    if (!relay) {
+        requestRelay(edgeId);
+        await waitForRelay(edgeId, deadline, signal);
+        relay = pickRelay(edgeId);
+        if (!relay) throw "relay_dial_failed";
+    }
+    if (load(relay) > 0 && requestRelay(edgeId)) {
+        const spare = await waitForSpare(edgeId, Math.min(deadline, Date.now() + SPARE_WAIT_MS));
+        if (signal?.aborted) {
+            if (spare) spare.reserved--;
+            throw (signal.reason as Reason) ?? "client_aborted";
+        }
+        if (spare) return spare;
+        relay = pickRelay(edgeId) ?? relay;
+    } else if (!liveRelays(edgeId).some((r) => r !== relay && load(r) === 0)) {
+        requestRelay(edgeId);
+    }
+    relay.reserved++;
+    return relay;
+}
+
+// The next session to come up, already reserved; null when none comes before `until`.
+function waitForSpare(edgeId: string, until: number): Promise<Relay | null> {
+    return new Promise((resolve) => {
+        const list = spareWaiters.get(edgeId) ?? [];
+        spareWaiters.set(edgeId, list);
+        const give = (relay: Relay | null) => {
+            clearTimeout(timer);
+            resolve(relay);
+        };
+        const timer = setTimeout(
+            () => {
+                list.splice(list.indexOf(give) >>> 0, 1);
+                resolve(null);
+            },
+            Math.max(1, until - Date.now())
+        );
+        list.push(give);
+    });
+}
+
+function releaseSpareWaiters(edgeId: string): void {
+    for (const give of spareWaiters.get(edgeId)?.splice(0) ?? []) give(null);
 }
 
 /** Resolves once a session of the Edge is up here; rejects at the deadline or on abort. */
@@ -138,6 +204,7 @@ function settleWaiters(edgeId: string, reason?: Reason): void {
 export function relayRequestFailed(edgeId: string, reason: Reason = "relay_dial_failed"): void {
     requestedAt.delete(edgeId);
     settleWaiters(edgeId, reason);
+    releaseSpareWaiters(edgeId);
 }
 
 /** A relay session of the Edge is up on this worker. */
@@ -154,10 +221,11 @@ export function registerRelay(edgeId: string, ws: WebSocket): Relay {
         queuedSince: 0,
         rttMin: 0,
         rttSmooth: 0,
+        reserved: 0,
     };
     registerHeartbeat(ws);
     relays.set(edgeId, [...(relays.get(edgeId) ?? []), relay]);
-    requestedAt.delete(edgeId);
+    pendingRequests(edgeId).shift();
     ws.on("pong", (data: Buffer) => onPong(relay, data));
     ws.once("close", () => {
         const left = (relays.get(edgeId) ?? []).filter((r) => r !== relay);
@@ -168,6 +236,12 @@ export function registerRelay(edgeId: string, ws: WebSocket): Relay {
             requestRelay(edgeId);
         }
     });
+    // a stream waiting for a spare takes it; streams waiting for any session wake up
+    const give = spareWaiters.get(edgeId)?.shift();
+    if (give) {
+        relay.reserved++;
+        give(relay);
+    }
     settleWaiters(edgeId);
     return relay;
 }
@@ -183,8 +257,12 @@ export function closeRelays(edgeId: string | null, reason: Reason): number {
             closed++;
         }
     }
-    if (edgeId) settleWaiters(edgeId, reason);
-    else for (const id of [...waiters.keys()]) settleWaiters(id, reason);
+    for (const id of edgeId
+        ? [edgeId]
+        : [...new Set([...waiters.keys(), ...spareWaiters.keys()])]) {
+        settleWaiters(id, reason);
+        releaseSpareWaiters(id);
+    }
     return closed;
 }
 
@@ -218,7 +296,7 @@ function reapIdle(): void {
     for (const [edgeId, list] of relays) {
         let left = list.length;
         for (const r of list) {
-            if (r.session.size > 0) {
+            if (load(r) > 0) {
                 r.idleSince = 0;
                 continue;
             }

@@ -8,6 +8,7 @@ import {
     closeRelays,
     configureRelays,
     pickRelay,
+    placeStream,
     registerRelay,
     relayRequestFailed,
     waitForRelay,
@@ -45,37 +46,50 @@ function fakeRelayWs() {
     return ws;
 }
 
-test("warden: relay placement spreads streams, asks for a spare, skips clogged sessions", () => {
+test("warden: relay placement spreads streams, waits for a spare, skips clogged sessions", async () => {
     const requests: string[] = [];
     configureRelays({ request: (id) => requests.push(id), keepWarm: () => false });
     const edge = "edge-place-1";
+    const open = async () => {
+        const relay = await placeStream(edge, Date.now() + 5000);
+        relay.session.startStream();
+        relay.reserved--;
+        return relay;
+    };
 
     assert.equal(pickRelay(edge), undefined);
-
     const r1 = registerRelay(edge, fakeRelayWs());
-    // the only session gets the stream; with no spare left the Edge is asked for one
-    assert.equal(pickRelay(edge), r1);
-    assert.deepEqual(requests, [edge]);
-    r1.session.startStream();
 
+    // the idle session takes the stream; taking the last idle one asks for a spare ahead
+    assert.equal(await open(), r1);
+    assert.equal(requests.length, 1);
+
+    // every session busy: the stream waits for the one dialed for it
+    const waiting = open();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(requests.length, 2, "one more asked for this stream");
     const r2 = registerRelay(edge, fakeRelayWs());
-    assert.equal(pickRelay(edge), r2, "the session with the fewest streams");
-    r2.session.startStream();
-    r2.session.startStream();
+    assert.equal(await waiting, r2, "the spare that came up is its own");
 
-    // r1 carries fewer streams but its WebSocket has been backed up for a while: skipped
+    // a third session comes up idle: the next stream takes it at once
+    const r3 = registerRelay(edge, fakeRelayWs());
+    assert.equal(await open(), r3);
+
+    // r1 carries one stream, r2 and r3 one each; a backed-up r1 is skipped by the fallback pick
     (r1.ws as any).bufferedAmount = 1024 * 1024;
     r1.queuedSince = Date.now() - 1000;
-    assert.equal(pickRelay(edge), r2);
+    r2.session.startStream();
+    r3.session.startStream();
+    assert.notEqual(pickRelay(edge), r1);
     (r1.ws as any).bufferedAmount = 0;
     assert.equal(pickRelay(edge), r1);
 
     // a round trip grown past twice its best is clogged too
     r1.rttMin = 10;
     r1.rttSmooth = 80;
-    assert.equal(pickRelay(edge), r2);
+    assert.notEqual(pickRelay(edge), r1);
 
-    assert.equal(closeRelays(edge, "edge_deleted"), 2);
+    assert.equal(closeRelays(edge, "edge_deleted"), 3);
     assert.equal(pickRelay(edge), undefined);
 });
 
@@ -116,6 +130,7 @@ test("warden: a relayed stream opens with the target in its OPEN, or edge_satura
     const req: any = { id: "s.1", clientIp: "203.0.113.1" };
 
     const opening = openRelayedStream(tunnel, req, Date.now() + 1000);
+    await new Promise((r) => setImmediate(r));
     const open = ws.sent.at(-1) as Buffer;
     assert.equal(open[0], 1, "an OPEN frame");
     const payload = JSON.parse(open.subarray(5).toString("utf-8"));
@@ -130,8 +145,9 @@ test("warden: a relayed stream opens with the target in its OPEN, or edge_satura
     await assert.rejects(opening, (e: any) => e.reason === "target_unreachable");
 
     for (let i = relay.session.size; i < MAX_STREAMS_PER_RELAY; i++) relay.session.startStream();
+    // full, and no spare comes: edge_saturated
     await assert.rejects(
-        openRelayedStream(tunnel, req, Date.now() + 1000),
+        openRelayedStream(tunnel, req, Date.now() + 3000),
         (e: any) => e.reason === "edge_saturated"
     );
     closeRelays(edge, "edge_deleted");

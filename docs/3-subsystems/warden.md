@@ -73,17 +73,17 @@ Relay sessions and the streams they carry do not depend on the lifeline and keep
 
 ## 2. Relay Sessions
 
-Each Hub worker keeps, per Edge, a pool of the relay sessions that Edge dialed to it: WebSockets carrying many streams, each opened by the Hub for one runtime stream (framing in the [Protocol Spec](../1-concepts/protocol-spec.md#c-relay-sessions)). Edges sit on home networks, where streams sharing one WebSocket wait on each other, so the pool spreads streams over several sessions.
+Each Hub worker keeps, per Edge, a pool of the relay sessions that Edge dialed to it: WebSockets carrying many streams, each opened by the Hub for one runtime stream (framing in the [Protocol Spec](../1-concepts/protocol-spec.md#c-relay-sessions)). Edges sit on home networks, where streams sharing one WebSocket wait a round trip on each other, and a stream stays on its session for life (keep-alive connections carry many requests), so the pool gives each new stream its own session while it can.
 
 ### Requesting a Session
 
-A worker asks the Edge for a session (`requestRelay`) when a stream finds none, when it needs a spare (see [Placement](#placement)), when its lifeline connects, and when its last session closes while streams wait or while it holds the Edge's lifeline:
+A worker asks the Edge for a session (`requestRelay`) when a stream finds none, when a stream finds every session busy or takes the last idle one (see [Placement](#placement)), when its lifeline connects, and when its last session closes while streams wait or while it holds the Edge's lifeline:
 
 - **Lifeline on this worker**: write `open_relay { worker: <this worker> }` on it.
 - **Clustered, lifeline elsewhere**: read `edge:<id>:worker` and send `relay_request { edgeId, worker }` through the Primary to the lifeline worker, which writes `open_relay { worker }`. A lifeline worker that no longer holds the lifeline answers `relay_failed { reason: "edge_disconnected" }`.
 - **No lifeline at all** (single process, or no presence): the waiting streams fail with `edge_disconnected`. KV unavailable while reading presence: `stream_error`.
 
-One request per Edge per worker is outstanding at a time: a new one is only sent once the previous one was answered (a session came up, or a failure was reported) or 10 seconds later. The lifeline connecting always sends one.
+Requests run in parallel: a burst of new streams asks for as many sessions at once. Sessions up plus requests outstanding (each counted for 10 seconds, or until a session comes up or a failure is reported) never exceed `MAX_RELAY_SESSIONS` (64) per Edge per worker. The lifeline connecting always sends one.
 
 ### Accepting a Session
 
@@ -91,14 +91,15 @@ A relay session is an upgrade presenting an edge token and `x-relay-worker: <wor
 
 1. **Resolve and gate** exactly like a [lifeline](#1-lifelines): unknown token `401`, storage or KV unavailable `503`, then `lifeline_connect(req, edge)`, whose denial or failure rejects the upgrade. The Edge retries a rejected dial once, then reports `open_relay_failed`.
 2. **Route**: if `x-relay-worker` names another worker (clustered mode), the raw socket is moved to it through the Primary without completing the handshake (see [Clustered Relay Sessions](#4-clustered-relay-sessions)). Otherwise the upgrade completes here.
-3. **Register**: the session joins the Edge's pool on this worker, runs the heartbeat, and wakes every stream of this worker waiting for a session of that Edge.
+3. **Register**: the session joins the Edge's pool on this worker and runs the heartbeat. The oldest stream waiting for a spare (see [Placement](#placement)) takes it; streams waiting for any session of that Edge wake up.
 
 ### Placement
 
-`pickRelay(edgeId)` chooses the session for a new stream:
+`placeStream(edgeId, deadline)` chooses the session for a new stream and reserves it until the stream's `OPEN` is written (so a burst of streams does not all pick the same idle session):
 
-1. Among the open sessions that are neither clogged nor at `MAX_STREAMS_PER_RELAY` (256) streams, take the one with the fewest streams (ties: the fewest bytes waiting to go out). When all are clogged or full, take the lightest of all.
-2. If no other session is idle (a spare) and the Edge has fewer than `MAX_RELAY_SESSIONS` (8) sessions on this worker, ask the Edge for one more. A stream never waits for that spare: it goes on the chosen session now.
+1. **Lightest**: among the open sessions that are neither clogged nor at `MAX_STREAMS_PER_RELAY` (256) streams, the one with the fewest streams (reservations included; ties: the fewest bytes waiting to go out). When all are clogged or full, the lightest of all. No session yet: ask for one and wait for it, until the deadline.
+2. **Idle**: the stream takes it. If it was the last idle session, ask the Edge for a spare ahead of the next stream.
+3. **Every session busy**: while `MAX_RELAY_SESSIONS` (64) allows, ask the Edge for one more and wait for it up to `SPARE_WAIT_MS` (1 s, within the deadline): the stream takes the next session to come up. When none comes in time, or the cap is reached, it shares the lightest session.
 
 A session is **clogged** while any of these holds:
 
@@ -120,7 +121,7 @@ Every 5 seconds the worker closes sessions that carried no stream for 30 seconds
 
 `openRelayedStream(tunnel, req, deadline, signal)` is called by the [Tunnel Handler](tunnel-handlers.md) for each stream of a relayed tunnel, after the Edge was found online:
 
-1. **Session**: `pickRelay`. If the Edge has none on this worker, request one and wait until one is up. The wait fails at `deadline` (`connect_timeout`), on `signal` (its abort reason: the runtime stream ended or was severed), or with the reported failure (`relay_dial_failed`, `edge_disconnected`, `target_worker_dead`, `stream_error`, `hub_shutdown`, or the sever reason). If no session is there once woken: `relay_dial_failed`.
+1. **Session**: `placeStream` (see [Placement](#placement)); when the Edge has none on this worker, it requests one and waits until one is up. The wait fails at `deadline` (`connect_timeout`), on `signal` (its abort reason: the runtime stream ended or was severed), or with the reported failure (`relay_dial_failed`, `edge_disconnected`, `target_worker_dead`, `stream_error`, `hub_shutdown`, or the sever reason). If no session is there once woken: `relay_dial_failed`.
 2. **Saturation**: the chosen session already carries `MAX_STREAMS_PER_RELAY` (256) streams: `edge_saturated`.
 3. **Open**: `connectTimeoutMs = deadline - Date.now()` (not positive: `connect_timeout`, nothing sent), then `OPEN` with the `RelayStreamOpen` payload `{ reqId, tunnel: { id, name, internalHost, internalPort, metadata }, client: { ip, correlationId }, connectTimeoutMs }`.
 4. **Outcome**:

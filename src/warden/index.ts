@@ -20,12 +20,11 @@ import {
     closeRelays,
     configureRelays,
     liveRelays,
-    pickRelay,
+    placeStream,
     registerRelay,
     relayRequestFailed,
-    requestRelay,
     stopRelays,
-    waitForRelay,
+    type Relay,
 } from "./relays.ts";
 import type { RelayStreamOpen } from "./types.ts";
 
@@ -107,21 +106,21 @@ export async function openRelayedStream(
     deadline: number,
     signal?: AbortSignal
 ): Promise<Duplex> {
-    const edgeId = tunnel.edgeId!;
-    let relay = pickRelay(edgeId);
-    if (!relay) {
-        requestRelay(edgeId);
-        try {
-            await waitForRelay(edgeId, deadline, signal);
-        } catch (reason) {
-            throw reasonError(isReason(reason) ? reason : "stream_error");
-        }
-        relay = pickRelay(edgeId);
-        if (!relay) throw reasonError("relay_dial_failed");
+    let relay: Relay;
+    try {
+        relay = await placeStream(tunnel.edgeId!, deadline, signal);
+    } catch (reason) {
+        throw reasonError(isReason(reason) ? reason : "stream_error");
     }
-    if (relay.session.size >= MAX_STREAMS_PER_RELAY) throw reasonError("edge_saturated");
+    if (relay.session.size >= MAX_STREAMS_PER_RELAY) {
+        relay.reserved--;
+        throw reasonError("edge_saturated");
+    }
     const connectTimeoutMs = deadline - Date.now();
-    if (connectTimeoutMs <= 0) throw reasonError("connect_timeout");
+    if (connectTimeoutMs <= 0) {
+        relay.reserved--;
+        throw reasonError("connect_timeout");
+    }
 
     const open: RelayStreamOpen = {
         reqId: req.id,
@@ -137,6 +136,7 @@ export async function openRelayedStream(
     };
     const session = relay.session;
     const { stream, ready } = session.startStream(JSON.stringify(open));
+    relay.reserved--;
 
     await new Promise<void>((resolve, reject) => {
         const cleanup = () => {
@@ -167,6 +167,9 @@ export async function openRelayedStream(
         );
         if (signal?.aborted) onAbort();
     });
+    // paused like a dialed target socket: nothing flows before the splice (a server-first
+    // protocol's greeting must not reach a connected hook's listener alone)
+    stream.pause();
     return stream;
 }
 
