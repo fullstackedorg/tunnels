@@ -55,6 +55,29 @@ node src/main.ts
 
 Put a TLS-terminating reverse proxy in front (see [Deployment Requirement: TLS](configuration.md#deployment-requirement-tls)). Clustering is limited to one host.
 
+### Docker Image
+
+The published image is `fullstackedorg/tunnels` (linux/amd64 and linux/arm64), built from the repository's `Dockerfile`. It runs a Hub, or an Edge when `HUB_URL` is set (see [Edge › Docker](edge.md#docker)).
+
+| Setting      | Value                                                                                                                                                                                       |
+| :----------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Base         | `node:24-alpine`, production dependencies only (`npm ci --omit=dev`): `drizzle-kit` is not included, run [schema initialization](#schema-initialization) from a checkout.                   |
+| Command      | `node src/main.ts`. Every [setting](configuration.md) works as an environment variable, or as CLI flags appended to the command.                                                            |
+| Port         | `3000` (`EXPOSE`; `PORT` / `--port` still decide what the Hub listens on).                                                                                                                  |
+| Data         | `DATA_DIR=/data`, a volume: filesystem storage writes `/data/store.json`. Unused with PostgreSQL.                                                                                           |
+| User         | `node` (uid 1000). Mounted plugins and token files must be readable by it; a host directory mounted on `/data` must be writable by it.                                                      |
+| Health check | Hub: any HTTP answer from `GET /edges?limit=1` (security hooks may answer `401`/`403`, which still proves the Hub serves). Edge: always healthy (no HTTP server; it reconnects on its own). |
+
+A single Hub with filesystem storage:
+
+```bash
+docker run -d --name tunnels-hub --restart unless-stopped \
+  -p 3000:3000 -v tunnels-data:/data \
+  fullstackedorg/tunnels:0.1.0
+```
+
+Put a TLS-terminating reverse proxy in front before exposing it (see [Deployment Requirement: TLS](configuration.md#deployment-requirement-tls)).
+
 ### Docker Compose
 
 ```yaml
@@ -73,9 +96,7 @@ services:
                 ipv4_address: 172.30.0.10
 
     hub:
-        build:
-            context: .
-            dockerfile: Dockerfile
+        image: fullstackedorg/tunnels:0.1.0 # or build: { context: ., dockerfile: Dockerfile }
         # no published port: only the proxy reaches the Hub
         environment:
             PORT: 3000
@@ -91,17 +112,7 @@ services:
                 condition: service_healthy
             redis:
                 condition: service_healthy
-        healthcheck:
-            test:
-                [
-                    "CMD",
-                    "node",
-                    "-e",
-                    "fetch('http://127.0.0.1:3000/edges?limit=1').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-                ]
-            interval: 10s
-            timeout: 5s
-            retries: 3
+        # health check: the image's own HEALTHCHECK
 
     postgres:
         image: postgres:16-alpine

@@ -263,6 +263,22 @@ The repository includes [`fullstackedorg/fullstacked`](https://github.com/fullst
 - **Node.js Imported Scripts**: Programmatic test harnesses import FullStacked packages directly to automate service instantiation, manage tunnel lifecycles, and assert protocol fidelity.
 - **In-Browser Testing**: Tests directly in the browser to test as close to a real-case scenario as possible.
 
+#### 3. Submodule Integration (`fullstackedorg/p2p`)
+
+The repository includes [`fullstackedorg/p2p`](https://github.com/fullstackedorg/p2p) (branch `main`) at `integration/p2p`. Tunnels must keep carrying its traffic: a P2P control socket is a long-lived TCP connection with a heartbeat, large frames and bursts of small ones, which tunnels deliver as one stream. `test/integration/p2p.test.ts` starts the P2P Server from the submodule's CLI entry point (`node integration/p2p/src/server/main.ts`, configured with `P2P_*` variables like its Docker image) and drives its client driver (`integration/p2p/src/client`, what the npm package `@fullstacked/p2p` exports):
+
+- **FullStacked CLI peer** through a direct tunnel and through an Edge-relayed tunnel, with a Node.js peer connected to the P2P Server directly: presence, request/reply both ways, a 900 KiB state value (one frame across many tunnel chunks), a burst of 300 ephemeral broadcasts that must arrive in order, then a reliable broadcast.
+- **Token roll**: `POST /tunnels/:id/roll-token` severs the tunnel session; the P2P client reconnects with `beforeConnect`, which reads the new token and registers the tunnel again.
+- **FullStacked webview page** through a direct tunnel.
+
+P2P does not need its own nested runtime here: initialize it without recursion.
+
+```bash
+git submodule update --init --recursive integration/fullstacked
+git submodule update --init integration/p2p
+npm ci --prefix integration/fullstacked
+```
+
 This comprehensive integration suite ensures everything remains fully functional across the board—from low-level TCP/wire protocols to real in-browser user interactions.
 
 ### D. Testing with Native Node Test Runner

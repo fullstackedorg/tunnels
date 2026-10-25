@@ -74,6 +74,24 @@ WantedBy=multi-user.target
 
 `systemctl enable --now fullstacked-edge`, logs with `journalctl -u fullstacked-edge`. `TOKEN_FILE` keeps the token out of the unit and the process list, and a rotated token is picked up without a restart (see [Revocation Handling](#revocation-handling)). To update, `git pull` and restart the service: streams in flight end, and the Edge is back within seconds.
 
+### Docker
+
+The `fullstackedorg/tunnels` image runs an Edge when `HUB_URL` is set (see [Hub › Docker Image](hub.md#docker-image) for the image defaults):
+
+```bash
+install -m 644 /dev/null edge.token   # then write the edge token into it (readable by uid 1000)
+docker run -d --name tunnels-edge --restart unless-stopped \
+  -e HUB_URL=wss://tunnels.example.com \
+  -e TOKEN_FILE=/run/secrets/edge_token \
+  -v "$PWD/edge.token:/run/secrets/edge_token:ro" \
+  fullstackedorg/tunnels:0.1.0
+```
+
+- Targets are dialed from inside the container: use addresses the container can reach. For services on the Docker host's LAN, `--network host` (Linux) makes the Edge see the host's network.
+- `--restart unless-stopped` plays the supervisor's role; the Edge still reconnects its lifeline on its own.
+- `TOKEN_FILE` keeps the token out of `docker inspect` and is re-read on every lifeline attempt, so rotating the file is enough.
+- The image's health check always passes for an Edge: watch `docker logs` (lifeline drops are logged with their reason).
+
 ---
 
 ## Lifeline

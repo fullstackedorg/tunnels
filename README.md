@@ -39,7 +39,7 @@ flowchart LR
 
 ## Principles
 
-- **Protocol-agnostic**: raw bidirectional byte streams, no payload inspection. Works with PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1, HTTP/2, gRPC, and interactive SSH. TCP half-close is not propagated (see [Protocol Spec](docs/1-concepts/protocol-spec.md#symmetrical-teardown-no-half-close)).
+- **Protocol-agnostic**: raw bidirectional byte streams, no payload inspection. Works with PostgreSQL, MySQL/MariaDB, Redis, MongoDB, HTTP/1.1, HTTP/2, gRPC, interactive SSH, and [FullStacked P2P](https://github.com/fullstackedorg/p2p) control sockets. TCP half-close is not propagated (see [Protocol Spec](docs/1-concepts/protocol-spec.md#symmetrical-teardown-no-half-close)).
 - **Resilient**: every WebSocket runs a bidirectional heartbeat that keeps it alive through NATs, proxies, and load balancers and detects dead peers. Edges reconnect with exponential backoff and full jitter, and fall back to slow polling only when their credential is revoked.
 - **Open by default, for tinkering**: no TLS setup, no admin credentials, no identity provider. Anyone can start a Hub on a laptop in seconds. Tokens are bearer secrets and are all a client needs.
 - **Secured with hooks**: authentication, IP allowlists, signed requests, rate limits, and multi-tenancy are added with [hooks](docs/4-extensibility/hooks.md). See [Extending Security](docs/4-extensibility/extending-security.md).
@@ -58,7 +58,11 @@ Requires Node.js 24 LTS or newer.
 node src/main.ts --port 3000
 ```
 
-Filesystem storage in `./data`, in-memory KV, plain `ws://localhost:3000`.
+Filesystem storage in `./data`, in-memory KV, plain `ws://localhost:3000`. Or with the Docker image:
+
+```bash
+docker run -d -p 3000:3000 -v tunnels-data:/data fullstackedorg/tunnels
+```
 
 ### 2. Register a Tunnel
 

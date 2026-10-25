@@ -1,5 +1,6 @@
 node_modules
 integration/fullstacked
+integration/p2p
 drizzle
 test/integration/tmp
 test/integration/.tmp
