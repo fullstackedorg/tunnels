@@ -41,12 +41,11 @@ async function cliOverTunnel(viaEdge: boolean) {
                   "P2P Relayed"
               )
             : await createDirectTunnel(harness.hubUrl, p2p.port, "127.0.0.1", "P2P Direct");
-        await node.setState("seed", "from node");
+        const nodeCh = await node.subscribe("test", { create: true });
+        await nodeCh.setState("seed", "from node");
         const messages: any[] = [];
-        node.on("message", (e) => {
-            messages.push(e.data);
-            e.reply?.({ transport: e.transport });
-        });
+        nodeCh.on("message", (e) => messages.push(e.data));
+        node.on("message", (e) => e.reply?.({ transport: e.transport }));
         const cli = runProgrammatic(`
             import tunnel from "fullstacked/tunnel";
             import { P2PClient } from "${CLI_IMPORT}";
@@ -58,20 +57,21 @@ async function cliOverTunnel(viaEdge: boolean) {
             });
             check(p2p.capabilities.webrtc === false, "the CLI is socket-only");
             check(p2p.getPeers("usr_node").length === 1, "sees the node peer");
-            check(p2p.getState("seed") === "from node", "state loaded on connect");
+            const ch = await p2p.subscribe("test");
+            check(ch.getState("seed") === "from node", "state loaded on subscribe");
             const done = new Promise((resolve) => p2p.on("message", (e) => e.data === "done" && resolve(null)));
             p2p.on("message", (e) => e.reply?.({ pong: e.data }));
-            await p2p.setState("big", "x".repeat(900 * 1024)); // one frame, many tunnel chunks
-            for (let i = 0; i < 300; i++) await p2p.broadcast({ cursor: i }, { ephemeral: true });
-            await p2p.broadcast({ final: true });
+            await ch.setState("big", "x".repeat(900 * 1024)); // one frame, many tunnel chunks
+            for (let i = 0; i < 300; i++) await ch.broadcast({ cursor: i }, { ephemeral: true });
+            await ch.broadcast({ final: true });
             const answer = await p2p.request("usr_node", "ping");
             check(answer.transport === "socket", "relayed over the control socket");
-            await p2p.setState("ready", true);
+            await ch.setState("ready", true);
             await done;
             await p2p.close();
         `);
-        await until(() => node.getState("ready") === true, "cli ready", 90_000);
-        assert.equal((node.getState("big") as string).length, 900 * 1024);
+        await until(() => nodeCh.getState("ready") === true, "cli ready", 90_000);
+        assert.equal((nodeCh.getState("big") as string).length, 900 * 1024);
         const cursors = messages.filter((m) => typeof m?.cursor === "number").map((m) => m.cursor);
         assert.ok(cursors.length > 0, "ephemeral frames arrived");
         assert.deepEqual(
@@ -119,6 +119,7 @@ test(
                 "127.0.0.1",
                 "P2P Roll"
             );
+            const nodeCh = await node.subscribe("test", { create: true });
             const events: string[] = [];
             node.on("peer:joined", (peer) => peer.peerId === "usr_cli" && events.push("joined"));
             node.on("peer:left", (peer) => peer.peerId === "usr_cli" && events.push("left"));
@@ -138,20 +139,25 @@ test(
                     return { host: await register(current.token) };
                 },
             });
-            await p2p.setState("before", 1);
+            const ch = await p2p.subscribe("test");
+            await ch.setState("before", 1);
             await new Promise((resolve) => p2p.once("reconnected", resolve));
-            await p2p.setState("after", 2);
+            await ch.setState("after", 2);
             await new Promise((resolve) => p2p.on("message", (e) => e.data === "done" && resolve(null)));
             await p2p.close();
         `);
-            await until(() => node.getState("before") === 1, "cli connected", 90_000);
+            await until(() => nodeCh.getState("before") === 1, "cli connected", 90_000);
             const rolled = await jsonFetch(`${harness.hubUrl}/tunnels/${tunnelId}/roll-token`, {
                 method: "POST",
                 body: {},
             });
             assert.equal(rolled.status, 200);
             assert.notEqual(rolled.data.token, token);
-            await until(() => node.getState("after") === 2, "cli back with the new token", 60_000);
+            await until(
+                () => nodeCh.getState("after") === 2,
+                "cli back with the new token",
+                60_000
+            );
             assert.deepEqual(events, ["joined", "left", "joined"]);
             await node.send("usr_cli", "done");
             await cli;
@@ -175,6 +181,7 @@ test("p2p: FullStacked webview page through a direct tunnel", { timeout: 180_000
             "127.0.0.1",
             "P2P Page"
         );
+        const nodeCh = await node.subscribe("test", { create: true });
         node.on("message", (e) => e.reply?.({ transport: e.transport }));
         const body = await runInBrowser(`
             import tunnel from "fullstacked/tunnel";
@@ -184,7 +191,7 @@ test("p2p: FullStacked webview page through a direct tunnel", { timeout: 180_000
                 const p2p = await P2PClient.connect({
                     host, port: 4444, user: "${user}", password: "${password}", peer: { id: "usr_page" },
                 });
-                await p2p.setState("from:page", true);
+                await (await p2p.subscribe("test")).setState("from:page", true);
                 const answer = await p2p.request("usr_node", "ping");
                 const result = { capabilities: p2p.capabilities, transport: answer.transport };
                 await p2p.close();
@@ -197,7 +204,7 @@ test("p2p: FullStacked webview page through a direct tunnel", { timeout: 180_000
         const result = JSON.parse(body);
         assert.deepEqual(result.capabilities, { webrtc: true, media: true });
         assert.equal(result.transport, "socket");
-        assert.equal(node.getState("from:page"), true);
+        assert.equal(nodeCh.getState("from:page"), true);
     } finally {
         await node.close();
         await harness.close();
