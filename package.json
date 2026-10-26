@@ -42,5 +42,6 @@
         "prettier": "^3.9.10",
         "puppeteer": "^25.16.0",
         "typescript": "^7.0.2"
-    }
+    },
+    "license": "MIT"
 }
