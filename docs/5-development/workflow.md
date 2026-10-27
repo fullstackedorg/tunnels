@@ -267,8 +267,8 @@ The repository includes [`fullstackedorg/fullstacked`](https://github.com/fullst
 
 The repository includes [`fullstackedorg/p2p`](https://github.com/fullstackedorg/p2p) (branch `main`) at `integration/p2p`. Tunnels must keep carrying its traffic: a P2P control socket is a long-lived TCP connection with a heartbeat, large frames and bursts of small ones, which tunnels deliver as one stream. `test/integration/p2p.test.ts` starts the P2P Server from the submodule's CLI entry point (`node integration/p2p/src/server/main.ts`, configured with `P2P_*` variables like its Docker image) and drives its client driver (`integration/p2p/src/client`, what the npm package `@fullstacked/p2p` exports):
 
-- **FullStacked CLI peer** through a direct tunnel and through an Edge-relayed tunnel, with a Node.js peer connected to the P2P Server directly, both subscribed to one channel: presence, request/reply both ways, a 900 KiB channel state value (one frame across many tunnel chunks), a burst of 300 ephemeral broadcasts that must arrive in order, then a reliable broadcast.
-- **Token roll**: `POST /tunnels/:id/roll-token` severs the tunnel session; the P2P client reconnects with `beforeConnect`, which reads the new token and registers the tunnel again.
+- **FullStacked CLI peer** through a direct tunnel and through an Edge-relayed tunnel, with a Node.js peer connected to the P2P Server directly, both subscribed to one channel: presence, request/reply both ways, a 900 KiB channel state value (one frame across many tunnel chunks), a batch write attributed to the CLI peer's device, a burst of 300 ephemeral broadcasts that must arrive in order, then a reliable broadcast.
+- **Token roll**: `POST /tunnels/:id/roll-token` severs the tunnel session; the P2P client reconnects with `beforeConnect`, which reads the new token and registers the tunnel again, and the other peer sees it come back as the same device (`peer:joined { replaces }`).
 - **FullStacked webview page** through a direct tunnel.
 
 P2P does not need its own nested runtime here: initialize it without recursion.

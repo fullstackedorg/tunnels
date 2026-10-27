@@ -62,6 +62,7 @@ async function cliOverTunnel(viaEdge: boolean) {
             const done = new Promise((resolve) => p2p.on("message", (e) => e.data === "done" && resolve(null)));
             p2p.on("message", (e) => e.reply?.({ pong: e.data }));
             await ch.setState("big", "x".repeat(900 * 1024)); // one frame, many tunnel chunks
+            await ch.setStates({ "batch:1": 1, "batch:2": 2 }); // one state:batch frame
             for (let i = 0; i < 300; i++) await ch.broadcast({ cursor: i }, { ephemeral: true });
             await ch.broadcast({ final: true });
             const answer = await p2p.request("usr_node", "ping");
@@ -72,6 +73,10 @@ async function cliOverTunnel(viaEdge: boolean) {
         `);
         await until(() => nodeCh.getState("ready") === true, "cli ready", 90_000);
         assert.equal((nodeCh.getState("big") as string).length, 900 * 1024);
+        assert.equal(nodeCh.getState("batch:2"), 2);
+        const cliPeerInfo = node.getPeers("usr_cli")[0];
+        const batch = await node.peek("test", { keys: ["batch:1"] });
+        assert.equal(batch.entries["batch:1"].deviceId, cliPeerInfo.deviceId, "writer's device");
         const cursors = messages.filter((m) => typeof m?.cursor === "number").map((m) => m.cursor);
         assert.ok(cursors.length > 0, "ephemeral frames arrived");
         assert.deepEqual(
@@ -121,7 +126,14 @@ test(
             );
             const nodeCh = await node.subscribe("test", { create: true });
             const events: string[] = [];
-            node.on("peer:joined", (peer) => peer.peerId === "usr_cli" && events.push("joined"));
+            const sessions: string[] = [];
+            const replaced: (string | undefined)[] = [];
+            node.on("peer:joined", (peer, { replaces }) => {
+                if (peer.peerId !== "usr_cli") return;
+                events.push("joined");
+                sessions.push(peer.sessionId);
+                replaced.push(replaces);
+            });
             node.on("peer:left", (peer) => peer.peerId === "usr_cli" && events.push("left"));
             const cli = runProgrammatic(`
             import tunnel from "fullstacked/tunnel";
@@ -159,6 +171,7 @@ test(
                 60_000
             );
             assert.deepEqual(events, ["joined", "left", "joined"]);
+            assert.deepEqual(replaced, [undefined, sessions[0]], "the same device, back");
             await node.send("usr_cli", "done");
             await cli;
         } finally {
