@@ -45,6 +45,8 @@ async function cliOverTunnel(viaEdge: boolean) {
         await nodeCh.setState("seed", "from node");
         const messages: any[] = [];
         nodeCh.on("message", (e) => messages.push(e.data));
+        const live: unknown[] = [];
+        nodeCh.on("state:changed", (c) => c.live && c.key === "drag" && live.push(c.value));
         node.on("message", (e) => e.reply?.({ transport: e.transport }));
         const cli = runProgrammatic(`
             import tunnel from "fullstacked/tunnel";
@@ -63,6 +65,8 @@ async function cliOverTunnel(viaEdge: boolean) {
             p2p.on("message", (e) => e.reply?.({ pong: e.data }));
             await ch.setState("big", "x".repeat(900 * 1024)); // one frame, many tunnel chunks
             await ch.setStates({ "batch:1": 1, "batch:2": 2 }); // one state:batch frame
+            await ch.setState("drag", { x: 1 }, { ephemeral: true }); // a live value, never stored
+            check(await ch.lease("job"), "the CLI peer holds the lease");
             for (let i = 0; i < 300; i++) await ch.broadcast({ cursor: i }, { ephemeral: true });
             await ch.broadcast({ final: true });
             const answer = await p2p.request("usr_node", "ping");
@@ -77,6 +81,8 @@ async function cliOverTunnel(viaEdge: boolean) {
         const cliPeerInfo = node.getPeers("usr_cli")[0];
         const batch = await node.peek("test", { keys: ["batch:1"] });
         assert.equal(batch.entries["batch:1"].deviceId, cliPeerInfo.deviceId, "writer's device");
+        assert.deepEqual(live, [{ x: 1 }], "the live value crossed the tunnel");
+        assert.equal(nodeCh.getLease("job").holder?.peerId, "usr_cli");
         const cursors = messages.filter((m) => typeof m?.cursor === "number").map((m) => m.cursor);
         assert.ok(cursors.length > 0, "ephemeral frames arrived");
         assert.deepEqual(
@@ -94,6 +100,11 @@ async function cliOverTunnel(viaEdge: boolean) {
         await node.send("usr_cli", "done");
         await cli;
         await until(() => node.getPeers("usr_cli").length === 0, "cli left", 10_000);
+        await until(
+            () => nodeCh.getLease("job").holder === null,
+            "lease released on leave",
+            10_000
+        );
     } finally {
         await node.close();
         await harness.close();
