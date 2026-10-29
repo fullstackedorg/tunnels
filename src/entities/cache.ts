@@ -1,0 +1,112 @@
+import { kv } from "../kv/index.ts";
+import { storage } from "../storage/index.ts";
+import type { EntityName } from "../storage/interface.ts";
+import type { Edge, Tunnel } from "./schema.ts";
+import { DEFAULT_ENTITY_CACHE_TTL, DEFAULT_NEGATIVE_CACHE_TTL } from "../constants.ts";
+
+export class ServiceUnavailableError extends Error {
+    readonly statusCode = 503;
+    constructor(message = "Service Unavailable") {
+        super(message);
+        this.name = "ServiceUnavailableError";
+    }
+}
+
+export interface ResolveTokenResult {
+    type: EntityName;
+    entity: Edge | Tunnel;
+}
+
+let entityCacheTtl = DEFAULT_ENTITY_CACHE_TTL;
+let negativeCacheTtl = DEFAULT_NEGATIVE_CACHE_TTL;
+
+export function setCacheTtl(entityTtl: number, negativeTtl: number): void {
+    entityCacheTtl = entityTtl;
+    negativeCacheTtl = negativeTtl;
+}
+
+export async function resolveToken(token: string): Promise<ResolveTokenResult | null> {
+    if (!token) return null;
+
+    let entityType: EntityName;
+    if (token.startsWith("tun_")) {
+        entityType = "tunnel";
+    } else if (token.startsWith("edg_")) {
+        entityType = "edge";
+    } else {
+        return null;
+    }
+
+    try {
+        // 1-2. Negative and positive cache in one round trip; a tombstone wins.
+        const [isMiss, cached] = await kv.mget<any>([
+            `entity:miss:${token}`,
+            `entity:${entityType}:${token}`,
+        ]);
+        if (isMiss !== null) {
+            return null;
+        }
+        if (cached) {
+            return { type: entityType, entity: cached };
+        }
+
+        // 3. Fallback to storage
+        const item = await storage.getByToken(entityType, token);
+        if (!item) {
+            await kv.set(`entity:miss:${token}`, 1, negativeCacheTtl);
+            return null;
+        }
+
+        // 4. Populate positive cache, unless the token was revoked meanwhile: a roll or delete
+        // committed after the storage read writes its tombstone before evicting, so an entry
+        // cached after the eviction is seen here and removed (it would outlive the tombstone)
+        await kv.setNX(`entity:${entityType}:${token}`, item, entityCacheTtl);
+        if ((await kv.get(`entity:miss:${token}`)) !== null) {
+            await kv.del(`entity:${entityType}:${token}`);
+            return null;
+        }
+
+        return { type: entityType, entity: item as any };
+    } catch (err) {
+        if (err instanceof ServiceUnavailableError) throw err;
+        throw new ServiceUnavailableError(
+            `Storage or KV error resolving token: ${(err as any)?.message}`
+        );
+    }
+}
+
+export async function cacheUpdateEntity(
+    entityType: EntityName,
+    entity: Edge | Tunnel
+): Promise<void> {
+    try {
+        await kv.set(`entity:${entityType}:${entity.token}`, entity, entityCacheTtl);
+    } catch {
+        // fail-open on cache updates, storage is source of truth
+    }
+}
+
+export async function cacheRollToken(
+    entityType: EntityName,
+    entity: Edge | Tunnel,
+    oldToken: string
+): Promise<void> {
+    try {
+        await kv.set(`entity:${entityType}:${entity.token}`, entity, entityCacheTtl);
+        // tombstone first, then evict (see resolveToken)
+        await kv.set(`entity:miss:${oldToken}`, 1, negativeCacheTtl);
+        await kv.del(`entity:${entityType}:${oldToken}`);
+    } catch {
+        // fail-open
+    }
+}
+
+export async function cacheDeleteEntity(entityType: EntityName, token: string): Promise<void> {
+    try {
+        // tombstone first, then evict (see resolveToken)
+        await kv.set(`entity:miss:${token}`, 1, negativeCacheTtl);
+        await kv.del(`entity:${entityType}:${token}`);
+    } catch {
+        // fail-open
+    }
+}

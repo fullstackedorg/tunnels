@@ -1,9 +1,47 @@
 {
-    "workspaces": [
-        "server",
-        "integration"
-    ],
-    "allowScripts": {
-        "esbuild": true
-    }
+    "name": "fullstacked-tunnels",
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "start": "node src/main.ts",
+        "fmt": "prettier --write .",
+        "fmt:check": "prettier --check .",
+        "typecheck": "tsc --noEmit",
+        "check:loc": "node scripts/check-loc.ts --max 300",
+        "check": "npm run fmt:check && npm run typecheck && npm run check:loc",
+        "test": "TEST=1 node --test test/*.test.ts",
+        "test:coverage": "TEST=1 node --test --experimental-test-coverage test/*.test.ts",
+        "test:integration": "node scripts/test-integration.ts"
+    },
+    "prettier": {
+        "tabWidth": 4,
+        "useTabs": false,
+        "semi": true,
+        "singleQuote": false,
+        "trailingComma": "es5",
+        "printWidth": 100,
+        "arrowParens": "always"
+    },
+    "dependencies": {
+        "bufferutil": "^4.1.0",
+        "drizzle-orm": "^0.45.4",
+        "pg": "^8.23.1",
+        "redis": "^6.3.0",
+        "ws": "^8.22.0"
+    },
+    "devDependencies": {
+        "@aws-sdk/client-s3": "^3.1156.0",
+        "@aws-sdk/s3-request-presigner": "^3.1156.0",
+        "@types/mongodb": "^4.0.7",
+        "@types/node": "^26.6.5",
+        "@types/pg": "^8.23.1",
+        "@types/ws": "^8.18.2",
+        "drizzle-kit": "^0.31.11",
+        "mongodb": "^7.7.0",
+        "mysql2": "^3.24.6",
+        "prettier": "^3.9.10",
+        "puppeteer": "^25.16.0",
+        "typescript": "^7.0.2"
+    },
+    "license": "MIT"
 }

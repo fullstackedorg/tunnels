@@ -1,3 +1,8 @@
 [submodule "integration/fullstacked"]
 	path = integration/fullstacked
 	url = https://github.com/fullstackedorg/fullstacked.git
+	branch = v1
+[submodule "integration/p2p"]
+	path = integration/p2p
+	url = https://github.com/fullstackedorg/p2p.git
+	branch = main

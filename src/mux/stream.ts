@@ -1,0 +1,190 @@
+import { Duplex } from "node:stream";
+import {
+    FRAME_DATA,
+    FRAME_FIN,
+    FRAME_OPENED,
+    FRAME_RESET,
+    MAX_DATA_PAYLOAD,
+    PRE_OPEN_WINDOW,
+    STREAM_WINDOW,
+    encodeFrame,
+    encodeWindow,
+} from "./frames.ts";
+
+/** What a stream needs from its session. */
+export interface StreamTransport {
+    send(frame: Buffer): void;
+    /** Resolves once the WebSocket buffer drains below its high-water mark. */
+    whenWritable(): Promise<void>;
+    release(id: number): void;
+    readonly open: boolean;
+}
+
+/**
+ * One multiplexed stream as a Node Duplex: writes become DATA frames within the peer's credit,
+ * received bytes are pushed and credit is returned as the consumer reads them (bytes beyond the
+ * credit granted, PRE_OPEN_WINDOW before OPENED, RESET the stream with stream_error). `end()` sends FIN;
+ * `destroy()` before both FINs sends RESET with `closeReason` (or stream_error / client_close).
+ */
+export class MuxStream extends Duplex {
+    readonly id: number;
+    /** Reason to send with RESET, and to report locally, when this side ends the stream. */
+    closeReason?: string;
+    /** Reason received in the peer's RESET. */
+    peerCloseReason?: string;
+
+    private readonly transport: StreamTransport;
+    // PRE_OPEN_WINDOW each way until OPENED (see frames.ts)
+    private sendCredit = PRE_OPEN_WINDOW;
+    private creditWaiters: (() => void)[] = [];
+    private received = 0;
+    private granted = PRE_OPEN_WINDOW;
+    private established = false;
+    private finSent = false;
+    private finReceived = false;
+    private resetDone = false;
+
+    constructor(transport: StreamTransport, id: number) {
+        super({ allowHalfOpen: true });
+        this.transport = transport;
+        this.id = id;
+    }
+
+    /** Accepting side: the target is dialed. */
+    opened(): void {
+        this.transport.send(encodeFrame(FRAME_OPENED, this.id));
+        this.establish();
+    }
+
+    /** Opening side: the peer answered OPENED. */
+    handleOpened(): void {
+        this.establish();
+    }
+
+    // OPENED grants the rest of STREAM_WINDOW both ways.
+    private establish(): void {
+        if (this.established) return;
+        this.established = true;
+        this.granted += STREAM_WINDOW - PRE_OPEN_WINDOW;
+        this.handleWindow(STREAM_WINDOW - PRE_OPEN_WINDOW);
+        this.grantCredit();
+    }
+
+    handleData(payload: Buffer): void {
+        if (this.destroyed || this.finReceived) return;
+        this.received += payload.length;
+        // a peer sending past the credit it was granted (PRE_OPEN_WINDOW before OPENED) would
+        // grow the buffer without bound
+        if (this.received > this.granted) {
+            this.closeReason = "stream_error";
+            this.destroy();
+            return;
+        }
+        this.push(payload);
+        this.grantCredit();
+    }
+
+    handleWindow(increment: number): void {
+        this.sendCredit += increment;
+        const waiters = this.creditWaiters;
+        this.creditWaiters = [];
+        waiters.forEach((resolve) => resolve());
+    }
+
+    handleFin(): void {
+        if (this.finReceived) return;
+        this.finReceived = true;
+        this.push(null);
+        if (this.finSent) this.release();
+    }
+
+    handleReset(reason: string): void {
+        this.resetDone = true;
+        this.peerCloseReason = reason || undefined;
+        const waiters = this.creditWaiters;
+        this.creditWaiters = [];
+        waiters.forEach((resolve) => resolve());
+        // After the peer's FIN, a RESET only carries its reason: the bytes it sent before are
+        // still delivered, then the stream closes (a consumer that never reads gets 5 s).
+        if (this.finReceived && !this.readableEnded) {
+            this.once("end", () => this.destroy());
+            setTimeout(() => this.destroy(), 5000).unref();
+            return;
+        }
+        this.destroy();
+    }
+
+    /** The session is gone: end without sending anything. */
+    sessionClosed(reason: string): void {
+        this.resetDone = true;
+        if (!this.peerCloseReason) this.peerCloseReason = reason;
+        this.handleWindow(0);
+        this.destroy();
+    }
+
+    override _read(): void {
+        this.grantCredit();
+    }
+
+    // Keep the peer's window at STREAM_WINDOW beyond what the consumer has read.
+    private grantCredit(): void {
+        if (this.destroyed || this.finReceived || !this.established) return;
+        const consumed = this.received - this.readableLength;
+        const target = consumed + STREAM_WINDOW;
+        if (target - this.granted >= STREAM_WINDOW / 2 && this.transport.open) {
+            this.transport.send(encodeWindow(this.id, target - this.granted));
+            this.granted = target;
+        }
+    }
+
+    override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (err?: Error) => void) {
+        this.writeChunk(chunk).then(() => callback(), callback);
+    }
+
+    // Writes buffered while corked go out together: one DATA frame for a burst of small writes.
+    override _writev(chunks: { chunk: Buffer }[], callback: (err?: Error | null) => void): void {
+        const data = Buffer.concat(chunks.map((c) => c.chunk));
+        this.writeChunk(data).then(() => callback(), callback);
+    }
+
+    private async writeChunk(chunk: Buffer): Promise<void> {
+        let offset = 0;
+        while (offset < chunk.length) {
+            if (this.resetDone || !this.transport.open) throw new Error("stream closed");
+            if (this.sendCredit <= 0) {
+                await new Promise<void>((resolve) => this.creditWaiters.push(resolve));
+                continue;
+            }
+            await this.transport.whenWritable();
+            const size = Math.min(MAX_DATA_PAYLOAD, this.sendCredit, chunk.length - offset);
+            this.transport.send(
+                encodeFrame(FRAME_DATA, this.id, chunk.subarray(offset, offset + size))
+            );
+            this.sendCredit -= size;
+            offset += size;
+        }
+    }
+
+    override _final(callback: (err?: Error) => void): void {
+        if (!this.resetDone && this.transport.open) {
+            this.finSent = true;
+            this.transport.send(encodeFrame(FRAME_FIN, this.id));
+            if (this.finReceived) this.release();
+        }
+        callback();
+    }
+
+    override _destroy(err: Error | null, callback: (err?: Error | null) => void): void {
+        if (!this.resetDone && !(this.finSent && this.finReceived) && this.transport.open) {
+            const reason = this.closeReason ?? (err ? "stream_error" : "client_close");
+            this.transport.send(encodeFrame(FRAME_RESET, this.id, reason));
+        }
+        this.resetDone = true;
+        this.release();
+        callback(err);
+    }
+
+    private release(): void {
+        this.transport.release(this.id);
+    }
+}
