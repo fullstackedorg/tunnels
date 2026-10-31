@@ -12,6 +12,8 @@ export interface EdgeLifelineOptions {
     onOrder?: (order: any) => void;
     /** Multi-worker Primary: sessions live in workers, so draining is delegated to them. */
     onRevoked?: (drainTimeoutMs: number, reason: Reason) => void;
+    /** Called when the Hub hostname stays unresolvable (tests replace process.exit). */
+    exit?: (code: number) => void;
 }
 
 export class EdgeLifeline {
@@ -21,6 +23,8 @@ export class EdgeLifeline {
     private isRunning = false;
     private isRevoked = false;
     private reconnectTimer: NodeJS.Timeout | null = null;
+    private dnsFailingSince: number | null = null;
+    private exit: (code: number) => void;
     private onOrder?: (order: any) => void;
     private onRevoked?: (drainTimeoutMs: number, reason: Reason) => void;
 
@@ -28,6 +32,26 @@ export class EdgeLifeline {
         this.config = options.config;
         this.onOrder = options.onOrder;
         this.onRevoked = options.onRevoked;
+        this.exit = options.exit ?? ((code) => process.exit(code));
+    }
+
+    // A container's /etc/resolv.conf is a copy taken when it starts: started before the host had DNS (boot
+    // before DHCP), it never resolves anything again. Exiting lets the supervisor start it with a fresh one.
+    private exitIfDnsStuck(dnsError: boolean): boolean {
+        if (!dnsError) {
+            this.dnsFailingSince = null;
+            return false;
+        }
+        this.dnsFailingSince ??= Date.now();
+        const limitMs = this.config.dnsExitAfter * 1000;
+        if (!limitMs || Date.now() - this.dnsFailingSince < limitMs) return false;
+        logger.error(
+            "Edge",
+            `Hub hostname unresolved for ${this.config.dnsExitAfter}s: exiting so the supervisor restarts the Edge (a container gets a fresh /etc/resolv.conf)`
+        );
+        this.isRunning = false;
+        this.exit(1);
+        return true;
     }
 
     private getBackoffDelay(): number {
@@ -99,12 +123,14 @@ export class EdgeLifeline {
         let resetTimer: NodeJS.Timeout | null = null;
         let openedAt = 0;
         let dialError = "";
+        let dnsError = false;
         let rejected = false;
 
         ws.once("open", () => {
             openedAt = Date.now();
             logger.info("Edge", `Connected lifeline to Hub: ${hubUrl}`);
             this.isRevoked = false;
+            this.dnsFailingSince = null;
 
             resetTimer = setTimeout(() => {
                 this.reconnectAttempt = 0;
@@ -177,15 +203,17 @@ export class EdgeLifeline {
                     );
                 } else if (!rejected) {
                     logger.warn("Edge", `Lifeline dial failed: ${dialError || `code ${code}`}`);
+                    if (this.exitIfDnsStuck(dnsError)) return;
                 }
                 this.reconnectAttempt++;
                 this.scheduleReconnect(this.getBackoffDelay());
             }
         });
 
-        ws.once("error", (err: Error) => {
+        ws.once("error", (err: NodeJS.ErrnoException) => {
             // reported by the close event
             dialError = err?.message ?? "";
+            dnsError = err?.code === "EAI_AGAIN" || err?.code === "ENOTFOUND";
         });
     }
 

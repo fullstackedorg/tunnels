@@ -15,6 +15,7 @@ import {
     DEFAULT_WORKERS,
     DEFAULT_RECONNECT_INTERVAL,
     DEFAULT_MAX_RECONNECT_INTERVAL,
+    DEFAULT_DNS_EXIT_AFTER,
 } from "../constants.ts";
 
 export interface AppConfig {
@@ -50,6 +51,7 @@ export interface AppConfig {
     maxReconnectInterval: number;
     drainTimeout: number;
     revokedPollInterval: number;
+    dnsExitAfter: number;
 }
 
 function parseCliArgs(args: string[]): Record<string, string | boolean> {
@@ -270,6 +272,14 @@ export function parseConfig(
             env,
             Number,
             DEFAULT_REVOKED_POLL_INTERVAL
+        ),
+        dnsExitAfter: getVal(
+            ["dns-exit-after"],
+            ["DNS_EXIT_AFTER"],
+            cli,
+            env,
+            Number,
+            DEFAULT_DNS_EXIT_AFTER
         ),
     };
 

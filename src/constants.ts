@@ -103,6 +103,8 @@ export const DEFAULT_DATA_DIR = "data";
 export const DEFAULT_WORKERS = 1;
 export const DEFAULT_RECONNECT_INTERVAL = 1;
 export const DEFAULT_MAX_RECONNECT_INTERVAL = 30;
+// Seconds the Hub hostname may fail to resolve before an Edge exits for its supervisor to restart it (0: never)
+export const DEFAULT_DNS_EXIT_AFTER = 300;
 
 /** Header of an Edge's relay session upgrade: the Hub worker identity it is dialed for. */
 export const RELAY_WORKER_HEADER = "x-relay-worker";
