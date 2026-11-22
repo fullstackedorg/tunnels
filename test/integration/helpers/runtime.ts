@@ -153,12 +153,17 @@ export async function runInBrowser(scriptContent: string): Promise<string> {
     const relEntryPath = path.relative(process.cwd(), entryPath);
     const relAppDir = path.relative(process.cwd(), appDir);
 
-    const bundleResult = await bundleMod.default.bundle(relEntryPath);
+    // FULLSTACKED_MODE=transform runs the page without bundling it, as the cloud's Faster start does
+    const mode = process.env.FULLSTACKED_MODE === "transform" ? "transform" : "bundle";
+    const bundleResult =
+        mode === "transform"
+            ? await bundleMod.default.prepare(relAppDir)
+            : await bundleMod.default.bundle(relEntryPath);
     if (bundleResult.Errors?.length > 0) {
-        throw new Error(`Browser bundling failed: ${JSON.stringify(bundleResult.Errors)}`);
+        throw new Error(`Browser ${mode} failed: ${JSON.stringify(bundleResult.Errors)}`);
     }
 
-    const browser = await createBrowser(relAppDir);
+    const browser = await createBrowser(relAppDir, undefined, mode);
     try {
         const page = await browser.createPage();
         page.page.on("pageerror", (err: any) => console.error("[BROWSER PAGE ERROR]", err));
